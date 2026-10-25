@@ -123,6 +123,21 @@ static CGFloat OverlayClamp(CGFloat value, CGFloat lower, CGFloat upper) {
         return NO;
     }
 
+    // Attempt 1: UIApplicationDelegate.window (standard in UnityAppController)
+    RemoteObjectRef delegate = [self call:application selector:"delegate"];
+    if (delegate) {
+        RemoteObjectRef delegateWindow = [self call:delegate selector:"window"];
+        if (delegateWindow) {
+            RemoteObjectRef isHidden = [self call:delegateWindow selector:"isHidden"];
+            if (!isHidden) {
+                self.window = delegateWindow;
+                LOG(@"[RemoteWebViewOverlay] FOUND UIWindow via delegate = 0x%llx", delegateWindow);
+                return YES;
+            }
+        }
+    }
+
+    // Attempt 2: connectedScenes -> windows
     RemoteObjectRef connectedScenes = [self call:application
                                         selector:"connectedScenes"];
     if (!connectedScenes) {
@@ -446,6 +461,20 @@ static CGFloat OverlayClamp(CGFloat value, CGFloat lower, CGFloat upper) {
 
     RemoteObjectRef wkConfigClass = [self getClass:"WKWebViewConfiguration"];
     if (!wkConfigClass) {
+        LOG(@"[RemoteWebViewOverlay] WKWebViewConfiguration not found, loading WebKit.framework...");
+        RemoteObjectRef bundleClass = [self getClass:"NSBundle"];
+        if (bundleClass) {
+            uint64_t bundlePath = remote_NSString(self.remoteCall, "/System/Library/Frameworks/WebKit.framework");
+            if (bundlePath) {
+                RemoteObjectRef bundle = [self call:bundleClass selector:"bundleWithPath:" argument:bundlePath];
+                if (bundle) {
+                    [self call:bundle selector:"load"];
+                    wkConfigClass = [self getClass:"WKWebViewConfiguration"];
+                }
+            }
+        }
+    }
+    if (!wkConfigClass) {
         LOG(@"[RemoteWebViewOverlay] WKWebViewConfiguration class not found");
         return NO;
     }
@@ -470,140 +499,145 @@ static CGFloat OverlayClamp(CGFloat value, CGFloat lower, CGFloat upper) {
         return NO;
     }
 
-    RemoteObjectRef webView = [self call:wkWebViewClass selector:"alloc"];
+    RemoteObjectRef webView = self.webView;
     if (!webView) {
-        LOG(@"[RemoteWebViewOverlay] WKWebView alloc failed");
-        return NO;
-    }
+        RemoteObjectRef allocWebView = [self call:wkWebViewClass selector:"alloc"];
+        if (!allocWebView) {
+            LOG(@"[RemoteWebViewOverlay] WKWebView alloc failed");
+            return NO;
+        }
 
-    {
         CGRect frame =
             CGRectMake(0, 0, self.cachedScreenWidth, self.cachedScreenHeight);
         const void *params[] = {&frame, &config};
         size_t sizes[] = {sizeof(frame), sizeof(config)};
         webView = remote_msg_on_main_thread(
-            self.remoteCall, webView,
+            self.remoteCall, allocWebView,
             [self getSelector:"initWithFrame:configuration:"], params, sizes,
             2);
-    }
 
-    if (!webView) {
-        LOG(@"[RemoteWebViewOverlay] WKWebView initWithFrame:configuration: "
-            @"failed");
-        return NO;
-    }
-    LOG(@"[RemoteWebViewOverlay] WKWebView created = 0x%llx", webView);
+        if (!webView) {
+            LOG(@"[RemoteWebViewOverlay] WKWebView initWithFrame:configuration: "
+                @"failed");
+            return NO;
+        }
+        self.webView = webView;
+        LOG(@"[RemoteWebViewOverlay] WKWebView created = 0x%llx", webView);
 
-    {
-        RemoteObjectRef uiColorClass = [self getClass:"UIColor"];
-        uint64_t clearSEL = [self getSelector:"clearColor"];
-        if (uiColorClass && clearSEL) {
-            RemoteObjectRef clearColor = remote_msg_on_main_thread(
-                self.remoteCall, uiColorClass, clearSEL, NULL, NULL, 0);
-            if (clearColor) {
-                uint64_t bgSEL = [self getSelector:"setBackgroundColor:"];
-                if (bgSEL) {
-                    const void *p[] = {&clearColor};
-                    size_t s[] = {sizeof(clearColor)};
-                    remote_msg_on_main_thread(self.remoteCall, webView, bgSEL,
-                                              p, s, 1);
+        {
+            RemoteObjectRef uiColorClass = [self getClass:"UIColor"];
+            uint64_t clearSEL = [self getSelector:"clearColor"];
+            if (uiColorClass && clearSEL) {
+                RemoteObjectRef clearColor = remote_msg_on_main_thread(
+                    self.remoteCall, uiColorClass, clearSEL, NULL, NULL, 0);
+                if (clearColor) {
+                    uint64_t bgSEL = [self getSelector:"setBackgroundColor:"];
+                    if (bgSEL) {
+                        const void *p[] = {&clearColor};
+                        size_t s[] = {sizeof(clearColor)};
+                        remote_msg_on_main_thread(self.remoteCall, webView, bgSEL,
+                                                  p, s, 1);
+                    }
                 }
+            }
+        }
+
+        {
+            uint64_t sel = [self getSelector:"setUserInteractionEnabled:"];
+            if (sel) {
+                BOOL enabled = NO;
+                const void *p[] = {&enabled};
+                size_t s[] = {sizeof(enabled)};
+                remote_msg_on_main_thread(self.remoteCall, webView, sel, p, s, 1);
+            }
+        }
+
+        {
+            uint64_t sel = [self getSelector:"setOpaque:"];
+            if (sel) {
+                BOOL opaque = NO;
+                const void *p[] = {&opaque};
+                size_t s[] = {sizeof(opaque)};
+                remote_msg_on_main_thread(self.remoteCall, webView, sel, p, s, 1);
+            }
+        }
+
+        [self setAutoresizingForView:webView];
+
+        {
+            uint64_t sel = [self getSelector:"setInspectable:"];
+            if (sel) {
+                BOOL inspectable = g_isDebug ? YES : NO;
+                const void *p[] = {&inspectable};
+                size_t s[] = {sizeof(inspectable)};
+                remote_msg_on_main_thread(self.remoteCall, webView, sel, p, s, 1);
+                LOG(@"[RemoteWebViewOverlay] WKWebView inspectable = %s",
+                    inspectable ? "YES" : "NO");
+            }
+        }
+
+        {
+            NSString *html = [self loadOverlayHTMLResource:@"overlay_esp"];
+            if (!html) {
+                LOG(@"[RemoteWebViewOverlay] Failed to load overlay_esp.html");
+                return NO;
+            }
+
+            uint64_t remoteHTML =
+                remote_NSString(self.remoteCall, [html UTF8String]);
+            if (!remoteHTML) {
+                LOG(@"[RemoteWebViewOverlay] remote_NSString failed for HTML");
+                return NO;
+            }
+
+            uint64_t loadSEL = [self getSelector:"loadHTMLString:baseURL:"];
+            if (loadSEL) {
+                uint64_t nilBaseURL = 0;
+                const void *p[] = {&remoteHTML, &nilBaseURL};
+                size_t s[] = {sizeof(remoteHTML), sizeof(nilBaseURL)};
+                remote_msg_on_main_thread(self.remoteCall, webView, loadSEL, p, s,
+                                          2);
+            }
+        }
+
+        {
+            uint64_t addSubviewSEL = [self getSelector:"addSubview:"];
+            if (addSubviewSEL) {
+                const void *p[] = {&webView};
+                size_t s[] = {sizeof(webView)};
+                remote_msg_on_main_thread(self.remoteCall, self.parentView,
+                                          addSubviewSEL, p, s, 1);
             }
         }
     }
 
-    {
-        uint64_t sel = [self getSelector:"setUserInteractionEnabled:"];
-        if (sel) {
-            BOOL enabled = NO;
-            const void *p[] = {&enabled};
-            size_t s[] = {sizeof(enabled)};
-            remote_msg_on_main_thread(self.remoteCall, webView, sel, p, s, 1);
-        }
-    }
-
-    {
-        uint64_t sel = [self getSelector:"setOpaque:"];
-        if (sel) {
-            BOOL opaque = NO;
-            const void *p[] = {&opaque};
-            size_t s[] = {sizeof(opaque)};
-            remote_msg_on_main_thread(self.remoteCall, webView, sel, p, s, 1);
-        }
-    }
-
-    [self setAutoresizingForView:webView];
-
-    {
-        uint64_t sel = [self getSelector:"setInspectable:"];
-        if (sel) {
-            BOOL inspectable = g_isDebug ? YES : NO;
-            const void *p[] = {&inspectable};
-            size_t s[] = {sizeof(inspectable)};
-            remote_msg_on_main_thread(self.remoteCall, webView, sel, p, s, 1);
-            LOG(@"[RemoteWebViewOverlay] WKWebView inspectable = %s",
-                inspectable ? "YES" : "NO");
-        }
-    }
-
-    {
-        NSString *html = [self loadOverlayHTMLResource:@"overlay_esp"];
-        if (!html) {
-            LOG(@"[RemoteWebViewOverlay] Failed to load overlay_esp.html");
-            return NO;
-        }
-
-        uint64_t remoteHTML =
-            remote_NSString(self.remoteCall, [html UTF8String]);
-        if (!remoteHTML) {
-            LOG(@"[RemoteWebViewOverlay] remote_NSString failed for HTML");
-            return NO;
-        }
-
-        uint64_t loadSEL = [self getSelector:"loadHTMLString:baseURL:"];
-        if (loadSEL) {
-            uint64_t nilBaseURL = 0;
-            const void *p[] = {&remoteHTML, &nilBaseURL};
-            size_t s[] = {sizeof(remoteHTML), sizeof(nilBaseURL)};
-            remote_msg_on_main_thread(self.remoteCall, webView, loadSEL, p, s,
-                                      2);
-        }
-    }
-
-    {
-        uint64_t addSubviewSEL = [self getSelector:"addSubview:"];
-        if (addSubviewSEL) {
-            const void *p[] = {&webView};
-            size_t s[] = {sizeof(webView)};
-            remote_msg_on_main_thread(self.remoteCall, self.parentView,
-                                      addSubviewSEL, p, s, 1);
-        }
-    }
-
-    CGRect fullScreenFrame =
-        CGRectMake(0, 0, self.cachedScreenWidth, self.cachedScreenHeight);
-    self.menuWebView = [self createWebViewWithResource:@"overlay_menu"
-                                                 frame:fullScreenFrame
-                                           interactive:YES
-                                                hidden:YES
-                                       autoresizesView:YES];
     if (!self.menuWebView) {
-        LOG(@"[RemoteWebViewOverlay] Failed to create menu WebView");
-        return NO;
+        CGRect fullScreenFrame =
+            CGRectMake(0, 0, self.cachedScreenWidth, self.cachedScreenHeight);
+        self.menuWebView = [self createWebViewWithResource:@"overlay_menu"
+                                                     frame:fullScreenFrame
+                                               interactive:YES
+                                                    hidden:YES
+                                           autoresizesView:YES];
+        if (!self.menuWebView) {
+            LOG(@"[RemoteWebViewOverlay] Failed to create menu WebView");
+            return NO;
+        }
     }
 
-    self.floatButtonWebView =
-        [self createWebViewWithResource:@"overlay_fab"
-                                  frame:[self floatButtonFrame]
-                            interactive:YES
-                                 hidden:NO
-                        autoresizesView:NO];
     if (!self.floatButtonWebView) {
-        LOG(@"[RemoteWebViewOverlay] Failed to create float button WebView");
-        return NO;
+        self.floatButtonWebView =
+            [self createWebViewWithResource:@"overlay_fab"
+                                      frame:[self floatButtonFrame]
+                                interactive:YES
+                                     hidden:NO
+                            autoresizesView:NO];
+        if (!self.floatButtonWebView) {
+            LOG(@"[RemoteWebViewOverlay] Failed to create float button WebView");
+            return NO;
+        }
     }
 
-    self.webView = webView;
     self.isOverlayReady = YES;
 
     [self broadcastOverlayLayout];

@@ -2345,8 +2345,9 @@ static BOOL remote_invoke_selector_on_main_thread_raw(
             cursor += argSizes[i];
         }
 
-        remote_msg(proc, invocation, selPerform, selInvokeWithTarget, target, 1,
-                   0);
+        BOOL wait = (returnSize > 0 && actualReturnSize > 0);
+        remote_msg(proc, invocation, selPerform, selInvokeWithTarget, target,
+                   wait ? 1 : 0, 0);
 
         if (actualReturnSize == 0 || !returnSize)
             return YES;

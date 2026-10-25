@@ -110,7 +110,11 @@ NS_ASSUME_NONNULL_BEGIN
               }
 
               if (self.binaryBase != 0) {
-                  if (!self.remoteWebViewOverlay.isOverlayReady) {
+                  if (self.isESPEnabled) {
+                      [self updateSnapshot:self.remoteCall];
+                  }
+
+                  if (!self.remoteWebViewOverlay.isOverlayReady && self.staticFieldsAddress != 0) {
                       if (overlayCooldown == 0) {
                           if (!self.remoteWebViewOverlay) {
                               self.remoteWebViewOverlay =
@@ -120,15 +124,11 @@ NS_ASSUME_NONNULL_BEGIN
                           if ([self.remoteWebViewOverlay setupBaseOverlay]) {
                               LOG(@"[FreeFire] WKWebView overlay setup done.");
                           } else {
-                              overlayCooldown = 50; // Throttle retry to ~0.5s
+                              overlayCooldown = 200; // Throttle retry to ~2.0s
                           }
                       } else {
                           overlayCooldown--;
                       }
-                  }
-
-                  if (self.isESPEnabled) {
-                      [self updateSnapshot:self.remoteCall];
                   }
               }
           }
@@ -298,25 +298,62 @@ NS_ASSUME_NONNULL_BEGIN
         return self.staticFieldsAddress;
     }
 
+    uintptr_t candidateTypeInfo = 0;
+
     // Attempt 1: Decode from GameFacade..cctor (0x5944B44)
     uintptr_t cctorAddr = self.binaryBase + kGameFacade_CCtor;
-    uintptr_t decoded = DecodeArm64AdrLdr(remoteCall, cctorAddr);
-    if (validOffsetPtr(decoded)) {
-        self.staticFieldsAddress = decoded;
-        LOG(@"[FreeFire] Resolved GameFacade static fields via cctor: 0x%lx",
-            decoded);
-        return decoded;
-    }
+    candidateTypeInfo = DecodeArm64AdrLdr(remoteCall, cctorAddr);
 
     // Attempt 2: Decode from CurrentLocalPlayer (0x591BD2C)
-    uintptr_t clpAddr = self.binaryBase + kGameFacade_CurrentLocalPlayer;
-    decoded = DecodeArm64AdrLdr(remoteCall, clpAddr);
-    if (validOffsetPtr(decoded)) {
-        self.staticFieldsAddress = decoded;
-        LOG(@"[FreeFire] Resolved GameFacade static fields via "
-            @"CurrentLocalPlayer: 0x%lx",
-            decoded);
-        return decoded;
+    if (!validOffsetPtr(candidateTypeInfo)) {
+        uintptr_t clpAddr = self.binaryBase + kGameFacade_CurrentLocalPlayer;
+        candidateTypeInfo = DecodeArm64AdrLdr(remoteCall, clpAddr);
+    }
+
+    if (!validOffsetPtr(candidateTypeInfo)) {
+        return 0;
+    }
+
+    // candidateTypeInfo is COW_GameFacade__TypeInfo (an Il2CppClass* / COW_GameFacade_c*)
+    // Verify class name at klass + 0x10
+    uintptr_t namePtr = ReadMemorySafe<uintptr_t>(remoteCall, candidateTypeInfo + 0x10);
+    char nameBuf[32] = {0};
+    if (validOffsetPtr(namePtr)) {
+        [remoteCall remoteRead:namePtr to:nameBuf size:sizeof(nameBuf) - 1];
+    }
+
+    uintptr_t staticFields = 0;
+    if (strstr(nameBuf, "GameFacade")) {
+        // COW_GameFacade_c* -> static_fields is at offset 0xB8
+        staticFields = ReadMemorySafe<uintptr_t>(remoteCall, candidateTypeInfo + 0xB8);
+        LOG(@"[FreeFire] Verified GameFacade class (name='%s'), static_fields=0x%lx",
+            nameBuf, (unsigned long)staticFields);
+    } else {
+        // Fallback: check if candidateTypeInfo was already static_fields
+        uintptr_t backKlass = candidateTypeInfo >= 0xB8 ? (candidateTypeInfo - 0xB8) : 0;
+        uintptr_t backNamePtr = backKlass ? ReadMemorySafe<uintptr_t>(remoteCall, backKlass + 0x10) : 0;
+        char backNameBuf[32] = {0};
+        if (validOffsetPtr(backNamePtr)) {
+            [remoteCall remoteRead:backNamePtr to:backNameBuf size:sizeof(backNameBuf) - 1];
+        }
+        if (strstr(backNameBuf, "GameFacade")) {
+            staticFields = candidateTypeInfo;
+            LOG(@"[FreeFire] Candidate was already static_fields: 0x%lx",
+                (unsigned long)staticFields);
+        } else {
+            // Primary fallback: try candidateTypeInfo + 0xB8
+            staticFields = ReadMemorySafe<uintptr_t>(remoteCall, candidateTypeInfo + 0xB8);
+            if (!validOffsetPtr(staticFields)) {
+                staticFields = candidateTypeInfo;
+            }
+        }
+    }
+
+    if (validOffsetPtr(staticFields)) {
+        self.staticFieldsAddress = staticFields;
+        LOG(@"[FreeFire] Successfully resolved GameFacade static fields: 0x%lx",
+            (unsigned long)staticFields);
+        return staticFields;
     }
 
     return 0;
@@ -385,6 +422,28 @@ NS_ASSUME_NONNULL_BEGIN
     uintptr_t currentMatchGame = ReadMemorySafe<uintptr_t>(
         remoteCall, staticFields + kGameFacadeStatic_CurrentMatchGame);
     if (!validOffsetPtr(currentMatchGame)) {
+        @synchronized(self) {
+            self.hasValidFrame = NO;
+            [self clearOverlayTargets];
+        }
+        return;
+    }
+
+    // Verify currentMatchGame is actually a COW_MatchGame instance
+    uintptr_t matchKlass = ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame);
+    if (!validOffsetPtr(matchKlass)) {
+        @synchronized(self) {
+            self.hasValidFrame = NO;
+            [self clearOverlayTargets];
+        }
+        return;
+    }
+
+    uintptr_t matchClassNamePtr = ReadMemorySafe<uintptr_t>(remoteCall, matchKlass + 0x10);
+    char matchClassName[32] = {0};
+    if (!validOffsetPtr(matchClassNamePtr) ||
+        ![remoteCall remoteRead:matchClassNamePtr to:matchClassName size:sizeof(matchClassName) - 1] ||
+        strstr(matchClassName, "MatchGame") == NULL) {
         @synchronized(self) {
             self.hasValidFrame = NO;
             [self clearOverlayTargets];
