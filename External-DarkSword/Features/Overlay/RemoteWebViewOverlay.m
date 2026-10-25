@@ -137,7 +137,18 @@ static CGFloat OverlayClamp(CGFloat value, CGFloat lower, CGFloat upper) {
         }
     }
 
-    // Attempt 2: connectedScenes -> windows
+    // Attempt 2: keyWindow
+    RemoteObjectRef keyWindow = [self call:application selector:"keyWindow"];
+    if (keyWindow) {
+        RemoteObjectRef isHidden = [self call:keyWindow selector:"isHidden"];
+        if (!isHidden) {
+            self.window = keyWindow;
+            LOG(@"[RemoteWebViewOverlay] FOUND UIWindow via keyWindow = 0x%llx", keyWindow);
+            return YES;
+        }
+    }
+
+    // Attempt 3: connectedScenes -> windows
     RemoteObjectRef connectedScenes = [self call:application
                                         selector:"connectedScenes"];
     if (!connectedScenes) {
