@@ -41,12 +41,14 @@ $(APPLICATION_NAME)_FILES = \
 	Core/pe/vnode.m \
 	Features/Games/AoV/AoVManager.mm \
 	Features/Games/AoV/Heroes/AoVHeroNameResolver.m \
+	Features/Games/FreeFire/FreeFireManager.mm \
 	Features/Overlay/OverlayWebSocketServer.m \
 	Features/Overlay/RemoteWebViewOverlay.m
 $(APPLICATION_NAME)_FRAMEWORKS = UIKit Foundation CoreFoundation Security AVFoundation CoreGraphics QuartzCore Metal MetalKit
 $(APPLICATION_NAME)_LIBRARIES = xpf grabkernel2
 $(APPLICATION_NAME)_CFLAGS = -fobjc-arc -Wno-error=deprecated-declarations -Wno-error=unused-variable -Wno-error=unused-function -Wno-error=unused-but-set-variable -Wno-error=unused-const-variable -Wno-error=incompatible-pointer-types -ICore -ICore/TaskRop -ICore/pe -ICore/headers -ICore/headers/choma
 Features/Games/AoV/AoVManager.mm_CFLAGS = -std=c++17
+Features/Games/FreeFire/FreeFireManager.mm_CFLAGS = -std=c++17
 $(APPLICATION_NAME)_SWIFTFLAGS = -import-objc-header $(THEOS_PROJECT_DIR)/External-DarkSword-Bridging-Header.h
 $(APPLICATION_NAME)_LDFLAGS = -L$(THEOS_PROJECT_DIR)/Resources/Frameworks -Wl,-rpath,@executable_path/Frameworks
 $(APPLICATION_NAME)_CODESIGN_FLAGS = -S$(THEOS_PROJECT_DIR)/External-DarkSword.entitlements

@@ -151,6 +151,13 @@ final class DarkSwordManager: ObservableObject {
         static let aovShowsName = "aov.esp.showsName"
         static let aovShowsDistance = "aov.esp.showsDistance"
         static let aovCameraHeight = "aov.camera.height"
+        static let freeFireProcess = "freefire.process"
+        static let freeFireESPEnabled = "freefire.esp.enabled"
+        static let freeFireShowsLine = "freefire.esp.showsLine"
+        static let freeFireShowsBox = "freefire.esp.showsBox"
+        static let freeFireShowsHealth = "freefire.esp.showsHealth"
+        static let freeFireShowsName = "freefire.esp.showsName"
+        static let freeFireShowsDistance = "freefire.esp.showsDistance"
     }
 
     private enum DefaultsFallback {
@@ -165,6 +172,13 @@ final class DarkSwordManager: ObservableObject {
         static let aovShowsName = false
         static let aovShowsDistance = false
         static let aovCameraHeight = 1.0
+        static let freeFireProcess = "FreeFire"
+        static let freeFireESPEnabled = false
+        static let freeFireShowsLine = false
+        static let freeFireShowsBox = false
+        static let freeFireShowsHealth = false
+        static let freeFireShowsName = false
+        static let freeFireShowsDistance = false
     }
 
     private static let aovCameraHeightMinValue: Double = 1
@@ -375,8 +389,112 @@ final class DarkSwordManager: ObservableObject {
         return nil
     }
 
+    @Published private(set) var isOpeningFreeFire = false
+
+    @Published var freeFireProcess = AppUserDefaults.string(
+        forKey: DefaultsKey.freeFireProcess,
+        fallbackValue: DefaultsFallback.freeFireProcess
+    ) {
+        didSet {
+            AppUserDefaults.setString(
+                freeFireProcess,
+                forKey: DefaultsKey.freeFireProcess
+            )
+        }
+    }
+    @Published var freeFireScanResult = "-"
+    @Published var freeFireStatus = "Idle"
+
+    @Published var freeFireESPEnabled = AppUserDefaults.bool(
+        forKey: DefaultsKey.freeFireESPEnabled,
+        fallbackValue: DefaultsFallback.freeFireESPEnabled
+    ) {
+        didSet {
+            AppUserDefaults.setBool(
+                freeFireESPEnabled,
+                forKey: DefaultsKey.freeFireESPEnabled
+            )
+            syncFreeFireESPOptions()
+        }
+    }
+    @Published var freeFireShowsLine = AppUserDefaults.bool(
+        forKey: DefaultsKey.freeFireShowsLine,
+        fallbackValue: DefaultsFallback.freeFireShowsLine
+    ) {
+        didSet {
+            AppUserDefaults.setBool(
+                freeFireShowsLine,
+                forKey: DefaultsKey.freeFireShowsLine
+            )
+            syncFreeFireESPOptions()
+        }
+    }
+    @Published var freeFireShowsBox = AppUserDefaults.bool(
+        forKey: DefaultsKey.freeFireShowsBox,
+        fallbackValue: DefaultsFallback.freeFireShowsBox
+    ) {
+        didSet {
+            AppUserDefaults.setBool(
+                freeFireShowsBox,
+                forKey: DefaultsKey.freeFireShowsBox
+            )
+            syncFreeFireESPOptions()
+        }
+    }
+    @Published var freeFireShowsHealth = AppUserDefaults.bool(
+        forKey: DefaultsKey.freeFireShowsHealth,
+        fallbackValue: DefaultsFallback.freeFireShowsHealth
+    ) {
+        didSet {
+            AppUserDefaults.setBool(
+                freeFireShowsHealth,
+                forKey: DefaultsKey.freeFireShowsHealth
+            )
+            syncFreeFireESPOptions()
+        }
+    }
+    @Published var freeFireShowsName = AppUserDefaults.bool(
+        forKey: DefaultsKey.freeFireShowsName,
+        fallbackValue: DefaultsFallback.freeFireShowsName
+    ) {
+        didSet {
+            AppUserDefaults.setBool(
+                freeFireShowsName,
+                forKey: DefaultsKey.freeFireShowsName
+            )
+            syncFreeFireESPOptions()
+        }
+    }
+    @Published var freeFireShowsDistance = AppUserDefaults.bool(
+        forKey: DefaultsKey.freeFireShowsDistance,
+        fallbackValue: DefaultsFallback.freeFireShowsDistance
+    ) {
+        didSet {
+            AppUserDefaults.setBool(
+                freeFireShowsDistance,
+                forKey: DefaultsKey.freeFireShowsDistance
+            )
+            syncFreeFireESPOptions()
+        }
+    }
+
+    let freeFireBundleIdentifier = "com.dts.freefireth"
+
+    var isConnectedToFreeFire: Bool {
+        let process = resolvedFreeFireProcessName()
+        return remoteConnected && connectedProcess == process
+    }
+
+    var freeFireGameCellStatus: String? {
+        if isOpeningFreeFire {
+            return "Opening"
+        }
+        return nil
+    }
+
     private var remoteCall: RemoteCall?
     private var aovManager: AoVManager?
+    private var freeFireManager: FreeFireManager?
     private let workerQueue = DispatchQueue(
         label: "external.darksword.worker",
         qos: .userInitiated
@@ -535,14 +653,22 @@ final class DarkSwordManager: ObservableObject {
                         == self.aovProcess.trimmingCharacters(
                             in: .whitespacesAndNewlines
                         )
+                    let isFreeFireProcess =
+                        process
+                        == self.resolvedFreeFireProcessName()
+                        || process.lowercased().contains("freefire")
                     self.remoteCall = nil
                     self.remoteConnected = false
                     self.connectedProcess = ""
                     self.remoteError = "Unable to find process: \(process)"
                     self.isBusy = false
-                    self.aovStatus = "Connect failed"
                     if isAoVProcess {
+                        self.aovStatus = "Connect failed"
                         self.isOpeningAoV = false
+                    }
+                    if isFreeFireProcess {
+                        self.freeFireStatus = "Connect failed"
+                        self.isOpeningFreeFire = false
                     }
                     self.appendLog(
                         "RemoteCall failed: process \"\(process)\" not found (procbyname)."
@@ -572,6 +698,10 @@ final class DarkSwordManager: ObservableObject {
                     == self.aovProcess.trimmingCharacters(
                         in: .whitespacesAndNewlines
                     )
+                let isFreeFireProcess =
+                    process
+                    == self.resolvedFreeFireProcessName()
+                    || process.lowercased().contains("freefire")
                 self.remoteCall = connected ? instance : nil
                 self.remoteConnected = connected
                 self.connectedProcess = connected ? process : ""
@@ -589,13 +719,25 @@ final class DarkSwordManager: ObservableObject {
                         self.isOpeningAoV = false
                         self.syncAoVESPOptions()
                         manager.runLoop()
+                    } else if let instance, isFreeFireProcess {
+                        let manager = FreeFireManager(remoteCall: instance)
+                        self.freeFireManager = manager
+                        self.freeFireStatus = "Connected to \(process)"
+                        self.isOpeningFreeFire = false
+                        self.syncFreeFireESPOptions()
+                        manager.runLoop()
                     } else {
                         self.aovStatus = "Connected to \(process)"
+                        self.freeFireStatus = "Connected to \(process)"
                     }
                 } else {
-                    self.aovStatus = "Connect failed"
                     if isAoVProcess {
+                        self.aovStatus = "Connect failed"
                         self.isOpeningAoV = false
+                    }
+                    if isFreeFireProcess {
+                        self.freeFireStatus = "Connect failed"
+                        self.isOpeningFreeFire = false
                     }
                 }
 
@@ -615,8 +757,10 @@ final class DarkSwordManager: ObservableObject {
 
         isBusy = true
         aovStatus = "Disconnecting..."
+        freeFireStatus = "Disconnecting..."
         appendLog("Disconnecting RemoteCall...")
         aovManager?.stopLoop()
+        freeFireManager?.stopLoop()
 
         workerQueue.async { [weak self] in
             guard let self else { return }
@@ -624,11 +768,14 @@ final class DarkSwordManager: ObservableObject {
             let result = remoteCall.destroy()
             DispatchQueue.main.async {
                 self.aovManager = nil
+                self.freeFireManager = nil
                 self.remoteCall = nil
                 self.remoteConnected = false
                 self.connectedProcess = ""
                 self.isOpeningAoV = false
+                self.isOpeningFreeFire = false
                 self.aovStatus = "Disconnected"
+                self.freeFireStatus = "Disconnected"
                 self.isBusy = false
                 self.appendLog("RemoteCall destroy result: \(result).")
                 self.broadcastOverlayState()
@@ -766,6 +913,32 @@ final class DarkSwordManager: ObservableObject {
         connectRemoteCall(processName: process)
     }
 
+    func resolvedFreeFireProcessName() -> String {
+        let configured = freeFireProcess.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        if !configured.isEmpty && isProcessRunning(configured) {
+            return configured
+        }
+        for candidate in ["FreeFire", "freefireth", "com.dts.freefireth"] {
+            if isProcessRunning(candidate) {
+                return candidate
+            }
+        }
+        return configured.isEmpty ? "FreeFire" : configured
+    }
+
+    func connectFreeFireRemoteCall() {
+        let process = resolvedFreeFireProcessName()
+        guard !process.isEmpty else {
+            remoteError = "Free Fire process name is empty."
+            freeFireStatus = "Name empty"
+            return
+        }
+        freeFireStatus = "Connecting..."
+        connectRemoteCall(processName: process)
+    }
+
     private func syncAoVESPOptions() {
         guard let aovManager else { return }
         aovManager.isESPEnabled = aovESPEnabled
@@ -778,6 +951,20 @@ final class DarkSwordManager: ObservableObject {
         aovManager.cameraHeight = aovCameraHeight
         if !aovESPEnabled {
             aovManager.clearOverlayTargets()
+        }
+        broadcastOverlayState()
+    }
+
+    private func syncFreeFireESPOptions() {
+        guard let freeFireManager else { return }
+        freeFireManager.isESPEnabled = freeFireESPEnabled
+        freeFireManager.showsLine = freeFireShowsLine
+        freeFireManager.showsBox = freeFireShowsBox
+        freeFireManager.showsHealth = freeFireShowsHealth
+        freeFireManager.showsName = freeFireShowsName
+        freeFireManager.showsDistance = freeFireShowsDistance
+        if !freeFireESPEnabled {
+            freeFireManager.clearOverlayTargets()
         }
         broadcastOverlayState()
     }
@@ -901,6 +1088,123 @@ final class DarkSwordManager: ObservableObject {
         }
     }
 
+    func openFreeFireAndConnect() {
+        guard !isBusy else { return }
+        guard allowSupportedAction("Free Fire Open & Connect") else { return }
+        guard allowToolingAction("Free Fire Open & Connect") else { return }
+
+        let process = resolvedFreeFireProcessName()
+        guard !process.isEmpty else {
+            remoteError = "Free Fire process name is empty."
+            freeFireStatus = "Name empty"
+            return
+        }
+
+        if remoteConnected && connectedProcess != process {
+            disconnectRemoteCallThenOpenFreeFire(process: process)
+            return
+        }
+
+        openFreeFireAndConnectAfterRemoteReady(
+            process: process,
+            shouldConnectAfterLaunch: !remoteConnected
+        )
+    }
+
+    private func disconnectRemoteCallThenOpenFreeFire(process: String) {
+        guard let remoteCall else {
+            openFreeFireAndConnectAfterRemoteReady(
+                process: process,
+                shouldConnectAfterLaunch: true
+            )
+            return
+        }
+
+        isBusy = true
+        remoteError = ""
+        isOpeningFreeFire = true
+        freeFireScanResult = "Disconnecting \(connectedProcess)..."
+        freeFireStatus = "Opening"
+        broadcastOverlayState()
+        appendLog(
+            "Disconnecting \(connectedProcess), then opening \(freeFireBundleIdentifier)..."
+        )
+        freeFireManager?.stopLoop()
+
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            usleep(50_000)
+            let result = remoteCall.destroy()
+            DispatchQueue.main.async {
+                self.freeFireManager = nil
+                self.remoteCall = nil
+                self.remoteConnected = false
+                self.connectedProcess = ""
+                self.appendLog("RemoteCall destroy result: \(result).")
+                self.openFreeFireAndConnectAfterRemoteReady(
+                    process: process,
+                    shouldConnectAfterLaunch: true
+                )
+            }
+        }
+    }
+
+    private func openFreeFireAndConnectAfterRemoteReady(
+        process: String,
+        shouldConnectAfterLaunch: Bool
+    ) {
+        isBusy = true
+        remoteError = ""
+        isOpeningFreeFire = true
+        freeFireScanResult = "Opening \(freeFireBundleIdentifier)..."
+        freeFireStatus = "Opening"
+        broadcastOverlayState()
+        appendLog(
+            "Opening \(freeFireBundleIdentifier), then connecting to \(process) in 3 seconds..."
+        )
+
+        guard launchApplication(bundleIdentifier: freeFireBundleIdentifier) else {
+            isBusy = false
+            isOpeningFreeFire = false
+            freeFireStatus = "Launch failed"
+            freeFireScanResult = "Unable to launch \(freeFireBundleIdentifier)"
+            remoteError = "LSApplicationWorkspace could not launch Free Fire."
+            broadcastOverlayState()
+            appendLog("Free Fire launch failed.")
+            return
+        }
+
+        if !shouldConnectAfterLaunch {
+            isBusy = false
+            isOpeningFreeFire = false
+            freeFireStatus = "Connected to \(process)"
+            freeFireScanResult = "Opened \(freeFireBundleIdentifier)"
+            broadcastOverlayState()
+            appendLog("Free Fire opened while RemoteCall is already connected.")
+            return
+        }
+
+        freeFireStatus = "Waiting 3 seconds..."
+        broadcastOverlayState()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self else { return }
+            guard !self.remoteConnected else {
+                self.isBusy = false
+                self.isOpeningFreeFire = false
+                self.broadcastOverlayState()
+                return
+            }
+
+            self.isBusy = false
+            self.freeFireStatus = "Connecting..."
+            self.broadcastOverlayState()
+            self.appendLog(
+                "Free Fire launch delay finished; connecting RemoteCall."
+            )
+            self.connectFreeFireRemoteCall()
+        }
+    }
+
     private func launchApplication(bundleIdentifier: String) -> Bool {
         let defaultWorkspace = NSSelectorFromString("defaultWorkspace")
         guard
@@ -938,6 +1242,21 @@ final class DarkSwordManager: ObservableObject {
                 bundleIdentifier: aovBundleIdentifier
             ),
             isRunning: isProcessRunning(aovProcess)
+        )
+    }
+
+    func freeFireGameStatus() -> GameStatusInfo {
+        let process = resolvedFreeFireProcessName()
+        return GameStatusInfo(
+            name: "Free Fire",
+            bundleIdentifier: freeFireBundleIdentifier,
+            processName: process,
+            isInstalled: isApplicationInstalled(
+                bundleIdentifier: freeFireBundleIdentifier
+            ),
+            isRunning: isProcessRunning(process)
+                || isProcessRunning("FreeFire")
+                || isProcessRunning("freefireth")
         )
     }
 
@@ -1052,6 +1371,7 @@ final class DarkSwordManager: ObservableObject {
         case "hello", "ready", "requestState":
             broadcastOverlayState()
             aovManager?.refreshOverlayLayout()
+            freeFireManager?.refreshOverlayLayout()
         case "setMenuVisible":
             guard let visibleValue = object["visible"],
                 let visible = boolValue(visibleValue)
@@ -1059,8 +1379,10 @@ final class DarkSwordManager: ObservableObject {
                 return
             }
             aovManager?.setOverlayMenuVisible(visible)
+            freeFireManager?.setOverlayMenuVisible(visible)
         case "toggleMenu":
             aovManager?.toggleOverlayMenu()
+            freeFireManager?.toggleOverlayMenu()
         case "setFloatButtonPosition":
             guard let xValue = object["xRatio"],
                 let yValue = object["yRatio"],
@@ -1073,8 +1395,13 @@ final class DarkSwordManager: ObservableObject {
                 CGFloat(xRatio),
                 y: CGFloat(yRatio)
             )
+            freeFireManager?.setOverlayFloatButtonPositionX(
+                CGFloat(xRatio),
+                y: CGFloat(yRatio)
+            )
         case "viewport":
             aovManager?.refreshOverlayLayout()
+            freeFireManager?.refreshOverlayLayout()
         case "setOption":
             guard let key = object["key"] as? String,
                 let value = object["value"]
@@ -1105,11 +1432,12 @@ final class DarkSwordManager: ObservableObject {
     @discardableResult
     private func applyOverlayOption(key: String, value: Any) -> Bool {
         switch key {
-        case "aovESPEnabled", "espEnabled", "esp":
-            guard let bool = boolValue(value), bool != aovESPEnabled else {
+        case "aovESPEnabled", "freeFireESPEnabled", "espEnabled", "esp":
+            guard let bool = boolValue(value) else {
                 return false
             }
             aovESPEnabled = bool
+            freeFireESPEnabled = bool
             return true
         case "aovHackMapEnabled", "hackMapEnabled", "hackMap", "map":
             guard let bool = boolValue(value), bool != aovHackMapEnabled else {
@@ -1117,35 +1445,40 @@ final class DarkSwordManager: ObservableObject {
             }
             aovHackMapEnabled = bool
             return true
-        case "aovShowsLine", "showsLine", "line":
-            guard let bool = boolValue(value), bool != aovShowsLine else {
+        case "aovShowsLine", "freeFireShowsLine", "showsLine", "line":
+            guard let bool = boolValue(value) else {
                 return false
             }
             aovShowsLine = bool
+            freeFireShowsLine = bool
             return true
-        case "aovShowsBox", "showsBox", "box":
-            guard let bool = boolValue(value), bool != aovShowsBox else {
+        case "aovShowsBox", "freeFireShowsBox", "showsBox", "box":
+            guard let bool = boolValue(value) else {
                 return false
             }
             aovShowsBox = bool
+            freeFireShowsBox = bool
             return true
-        case "aovShowsHealth", "showsHealth", "health":
-            guard let bool = boolValue(value), bool != aovShowsHealth else {
+        case "aovShowsHealth", "freeFireShowsHealth", "showsHealth", "health":
+            guard let bool = boolValue(value) else {
                 return false
             }
             aovShowsHealth = bool
+            freeFireShowsHealth = bool
             return true
-        case "aovShowsName", "showsName", "name":
-            guard let bool = boolValue(value), bool != aovShowsName else {
+        case "aovShowsName", "freeFireShowsName", "showsName", "name":
+            guard let bool = boolValue(value) else {
                 return false
             }
             aovShowsName = bool
+            freeFireShowsName = bool
             return true
-        case "aovShowsDistance", "showsDistance", "distance":
-            guard let bool = boolValue(value), bool != aovShowsDistance else {
+        case "aovShowsDistance", "freeFireShowsDistance", "showsDistance", "distance":
+            guard let bool = boolValue(value) else {
                 return false
             }
             aovShowsDistance = bool
+            freeFireShowsDistance = bool
             return true
         case "aovCameraHeight", "cameraHeight":
             guard let double = doubleValue(value) else { return false }
@@ -1206,6 +1539,7 @@ final class DarkSwordManager: ObservableObject {
             "remoteConnected": remoteConnected,
             "connectedProcess": connectedProcess,
             "aovStatus": aovStatus,
+            "freeFireStatus": freeFireStatus,
             "socketClients": overlaySocketClientCount,
         ]
         let payload: [String: Any] = [

@@ -15,13 +15,15 @@ struct GameListScreen: View {
     @State private var isShowingLaunchAlert = false
     @State private var launchAlertMessage = ""
     @State private var isWaitingForGameActionResult = false
+    @State private var lastAttemptedGame = "aov"
 
     private let timer = Timer.publish(every: 1, on: .main, in: .common)
         .autoconnect()
 
     var body: some View {
         let _ = manager.gameStatusVersion
-        let game = manager.aovGameStatus()
+        let aovGame = manager.aovGameStatus()
+        let freeFireGame = manager.freeFireGameStatus()
 
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -41,6 +43,7 @@ struct GameListScreen: View {
                 }
 
                 Button {
+                    lastAttemptedGame = "aov"
                     isWaitingForGameActionResult = true
                     manager.openAoVAndConnect()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
@@ -48,7 +51,7 @@ struct GameListScreen: View {
                     }
                 } label: {
                     GameCard(
-                        game: game,
+                        game: aovGame,
                         statusText: AppStrings.gameCellStatus(
                             manager.aovGameCellStatus,
                             language: language
@@ -60,17 +63,72 @@ struct GameListScreen: View {
                 .buttonStyle(.plain)
                 .padding(.horizontal, 18)
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(
-                        AppStrings.aovStatus(
-                            manager.aovStatus,
+                Button {
+                    lastAttemptedGame = "freefire"
+                    isWaitingForGameActionResult = true
+                    manager.openFreeFireAndConnect()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        showLaunchErrorIfNeeded()
+                    }
+                } label: {
+                    GameCard(
+                        game: freeFireGame,
+                        statusText: AppStrings.gameCellStatus(
+                            manager.freeFireGameCellStatus,
                             language: language
+                        ),
+                        isBusy: manager.isBusy,
+                        palette: palette
+                    )
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 18)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    if manager.remoteConnected {
+                        Text(
+                            AppStrings.remoteCallStatus(
+                                connected: true,
+                                process: manager.connectedProcess,
+                                language: language
+                            )
                         )
-                    )
-                    .font(
-                        .system(.footnote, design: .monospaced).weight(.bold)
-                    )
-                    .foregroundColor(palette.secondaryText)
+                        .font(
+                            .system(.footnote, design: .monospaced).weight(.bold)
+                        )
+                        .foregroundColor(palette.accent)
+                    } else {
+                        if manager.aovStatus != "Idle" {
+                            Text(
+                                "AoV: \(AppStrings.aovStatus(manager.aovStatus, language: language))"
+                            )
+                            .font(
+                                .system(.footnote, design: .monospaced).weight(.bold)
+                            )
+                            .foregroundColor(palette.secondaryText)
+                        }
+                        if manager.freeFireStatus != "Idle" {
+                            Text(
+                                "Free Fire: \(AppStrings.aovStatus(manager.freeFireStatus, language: language))"
+                            )
+                            .font(
+                                .system(.footnote, design: .monospaced).weight(.bold)
+                            )
+                            .foregroundColor(palette.secondaryText)
+                        }
+                        if manager.aovStatus == "Idle" && manager.freeFireStatus == "Idle" {
+                            Text(
+                                AppStrings.aovStatus(
+                                    manager.aovStatus,
+                                    language: language
+                                )
+                            )
+                            .font(
+                                .system(.footnote, design: .monospaced).weight(.bold)
+                            )
+                            .foregroundColor(palette.secondaryText)
+                        }
+                    }
 
                     if !manager.remoteError.isEmpty {
                         Text(manager.remoteError)
@@ -130,13 +188,23 @@ struct GameListScreen: View {
     private func showLaunchErrorIfNeeded() {
         guard isWaitingForGameActionResult else { return }
         guard !manager.remoteError.isEmpty else { return }
-        launchAlertMessage = AppStrings.gameLaunchDetails(
-            error: manager.remoteError,
-            bundleIdentifier: manager.aovBundleIdentifier,
-            process: manager.aovProcess,
-            status: manager.aovStatus,
-            language: language
-        )
+        if lastAttemptedGame == "freefire" {
+            launchAlertMessage = AppStrings.gameLaunchDetails(
+                error: manager.remoteError,
+                bundleIdentifier: manager.freeFireBundleIdentifier,
+                process: manager.freeFireProcess,
+                status: manager.freeFireStatus,
+                language: language
+            )
+        } else {
+            launchAlertMessage = AppStrings.gameLaunchDetails(
+                error: manager.remoteError,
+                bundleIdentifier: manager.aovBundleIdentifier,
+                process: manager.aovProcess,
+                status: manager.aovStatus,
+                language: language
+            )
+        }
         isWaitingForGameActionResult = false
         isShowingLaunchAlert = true
     }

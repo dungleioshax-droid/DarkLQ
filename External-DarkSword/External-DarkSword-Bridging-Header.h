@@ -7,4 +7,5 @@
 #import "Core/offsets.h"
 #import "Core/utils.h"
 #import "Features/Games/AoV/AoVManager.h"
+#import "Features/Games/FreeFire/FreeFireManager.h"
 #import "Features/Overlay/OverlayWebSocketServer.h"
