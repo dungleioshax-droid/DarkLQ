@@ -7,6 +7,7 @@
 #define FreeFireUtils_h
 
 #import "../../../App/Configuration/Macros.h"
+#import "../../../App/Support/helper.h"
 #import "../../../Core/TaskRop/RemoteCall.h"
 #import "../../Unity/Vector3.h"
 #import "FreeFireOffset.h"
@@ -15,27 +16,6 @@
 #include <cmath>
 #include <cstring>
 #include <string>
-
-static inline bool validOffsetPtr(uintptr_t ptr) {
-    return ptr > 0x100000000ULL && ptr < 0x2000000000ULL;
-}
-
-template <typename T>
-static inline T ReadMemorySafe(RemoteCall *remoteCall, uintptr_t address) {
-    T value = {};
-    if (!validOffsetPtr(address) || !remoteCall)
-        return value;
-    [remoteCall remoteRead:address to:&value size:sizeof(T)];
-    return value;
-}
-
-template <typename T>
-static inline bool WriteMemorySafe(RemoteCall *remoteCall, uintptr_t address,
-                                   T value) {
-    if (!validOffsetPtr(address) || !remoteCall)
-        return false;
-    return [remoteCall remote_write:address from:&value size:sizeof(T)];
-}
 
 // MARK: - Matrix 4x4 Math
 
