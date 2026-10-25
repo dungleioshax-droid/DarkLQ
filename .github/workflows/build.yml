@@ -34,11 +34,6 @@ jobs:
           path: theos
           submodules: recursive
 
-      - name: Download Theos SDKs
-        run: |
-          rm -rf $THEOS/sdks
-          git clone --depth=1 https://github.com/theos/sdks.git $THEOS/sdks
-
       - name: Build IPA via Theos
         run: |
           cd External-DarkSword
