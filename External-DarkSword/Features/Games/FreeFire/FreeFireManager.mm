@@ -396,13 +396,10 @@ NS_ASSUME_NONNULL_BEGIN
     }
 
     // 2. Read CurrentMatchGame
-    // In match, CurrentMatchGame is at staticFields + 0x08 (or CurrentGame at staticFields + 0x00)
+    // In match, CurrentMatchGame is at staticFields + 0x08.
+    // In lobby, CurrentMatchGame is NULL (0x0). Do NOT fall back to CurrentGame (which is LobbyGame).
     uintptr_t currentMatchGame = ReadMemorySafe<uintptr_t>(
         remoteCall, staticFields + kGameFacadeStatic_CurrentMatchGame);
-    if (!validOffsetPtr(currentMatchGame)) {
-        currentMatchGame = ReadMemorySafe<uintptr_t>(
-            remoteCall, staticFields + kGameFacadeStatic_CurrentGame);
-    }
     if (!validOffsetPtr(currentMatchGame)) {
         @synchronized(self) {
             self.hasValidFrame = NO;

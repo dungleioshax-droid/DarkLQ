@@ -2102,27 +2102,22 @@ uint64_t remote_alloc_str(RemoteCall *proc, const char *str) {
     uint64_t len = strlen(str) + 1;
     if (proc.trojanMemIsStackFallback) {
         uint64_t offset = (proc.trojanMemScratchOffset + 7) & ~7ULL;
-        if (offset + len > PAGE_SIZE) {
-            RC_IOS16_DEBUG_LOG("(rc.iOS16) stack fallback remote_alloc_str "
-                               "overflow len=0x%llx offset=0x%llx\n",
-                               len, offset);
-            fflush(stdout);
-            return 0;
+        if (offset + len <= PAGE_SIZE) {
+            uint64_t buf = proc.trojanMem + offset;
+            if ([proc remote_write:buf from:str size:len]) {
+                proc.trojanMemScratchOffset = offset + len;
+                return buf;
+            }
         }
-        uint64_t buf = proc.trojanMem + offset;
-        if (![proc remote_write:buf from:str size:len]) {
-            RC_IOS16_DEBUG_LOG("(rc.iOS16) stack fallback remote_alloc_str "
-                               "write failed buf=0x%llx len=0x%llx\n",
-                               buf, len);
-            fflush(stdout);
-            return 0;
+        // Fallback for strings exceeding PAGE_SIZE or when scratch page is full
+        uint64_t buf = RemoteArbCall(proc, malloc, len);
+        if (buf) {
+            if ([proc remote_write:buf from:str size:len]) {
+                return buf;
+            }
+            RemoteArbCall(proc, free, buf);
         }
-        proc.trojanMemScratchOffset = offset + len;
-        RC_IOS16_DEBUG_LOG("(rc.iOS16) stack fallback remote_alloc_str "
-                           "buf=0x%llx len=0x%llx next=0x%llx str=%s\n",
-                           buf, len, proc.trojanMemScratchOffset, str);
-        fflush(stdout);
-        return buf;
+        return 0;
     }
     uint64_t buf = RemoteArbCall(proc, malloc, len);
     if (buf)
@@ -2133,7 +2128,9 @@ uint64_t remote_alloc_str(RemoteCall *proc, const char *str) {
 uint64_t remote_sel(RemoteCall *proc, const char *name) {
     uint64_t str = remote_alloc_str(proc, name);
     uint64_t sel = RemoteArbCall(proc, sel_registerName, str);
-    if (!proc.trojanMemIsStackFallback) {
+    BOOL isHeap = !proc.trojanMemIsStackFallback ||
+                  (str < proc.trojanMem || str >= proc.trojanMem + PAGE_SIZE);
+    if (isHeap) {
         RemoteArbCall(proc, free, str);
     }
     return sel;
@@ -2142,7 +2139,9 @@ uint64_t remote_sel(RemoteCall *proc, const char *name) {
 uint64_t remote_getClass(RemoteCall *proc, const char *name) {
     uint64_t str = remote_alloc_str(proc, name);
     uint64_t cls = RemoteArbCall(proc, objc_getClass, str);
-    if (!proc.trojanMemIsStackFallback) {
+    BOOL isHeap = !proc.trojanMemIsStackFallback ||
+                  (str < proc.trojanMem || str >= proc.trojanMem + PAGE_SIZE);
+    if (isHeap) {
         RemoteArbCall(proc, free, str);
     }
     return cls;
@@ -2174,7 +2173,10 @@ uint64_t remote_NSString(RemoteCall *proc, const char *str) {
 
         uint64_t result = RemoteArbCall(proc, CFStringCreateWithCString, 0,
                                         resultCStr, kCFStringEncodingUTF8);
-        if (!proc.trojanMemIsStackFallback) {
+        BOOL isHeap = !proc.trojanMemIsStackFallback ||
+                      (resultCStr < proc.trojanMem ||
+                       resultCStr >= proc.trojanMem + PAGE_SIZE);
+        if (isHeap) {
             RemoteArbCall(proc, free, resultCStr);
         }
         return result;
