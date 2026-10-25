@@ -1160,7 +1160,7 @@ final class DarkSwordManager: ObservableObject {
         freeFireStatus = "Opening"
         broadcastOverlayState()
         appendLog(
-            "Opening \(freeFireBundleIdentifier), then connecting to \(process) in 3 seconds..."
+            "Opening \(freeFireBundleIdentifier), then connecting to \(process) in 10 seconds..."
         )
 
         guard launchApplication(bundleIdentifier: freeFireBundleIdentifier) else {
@@ -1184,9 +1184,9 @@ final class DarkSwordManager: ObservableObject {
             return
         }
 
-        freeFireStatus = "Waiting 3 seconds..."
+        freeFireStatus = "Waiting 10 seconds..."
         broadcastOverlayState()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
             guard let self else { return }
             guard !self.remoteConnected else {
                 self.isBusy = false

@@ -102,9 +102,9 @@ static bool LooksLikeViewProjection(const float *matrix) {
     return fabsf(matrix[11]) > 0.01f || fabsf(matrix[15]) < 0.95f;
 }
 
-static bool ReadCameraVPMatrixFromNative(RemoteCall *remoteCall,
-                                        uintptr_t camera, float *out) {
-    if (!validOffsetPtr(camera) || !remoteCall || !out)
+static bool ReadCameraVPAndWorldMatrix(RemoteCall *remoteCall, uintptr_t camera,
+                                      float *outVP, float *outView) {
+    if (!validOffsetPtr(camera) || !remoteCall || !outVP)
         return false;
 
     uintptr_t nativeCamera =
@@ -122,7 +122,10 @@ static bool ReadCameraVPMatrixFromNative(RemoteCall *remoteCall,
                         projection)) {
         MultiplyMatrix4x4(projection, view, viewProjection);
         if (LooksLikeViewProjection(viewProjection)) {
-            memcpy(out, viewProjection, sizeof(viewProjection));
+            memcpy(outVP, viewProjection, sizeof(viewProjection));
+            if (outView) {
+                memcpy(outView, view, sizeof(view));
+            }
             return true;
         }
     }
@@ -130,7 +133,128 @@ static bool ReadCameraVPMatrixFromNative(RemoteCall *remoteCall,
     if (ReadValidMatrix(remoteCall, nativeCamera + kNativeCamera_WorldToClip,
                         viewProjection) &&
         LooksLikeViewProjection(viewProjection)) {
-        memcpy(out, viewProjection, sizeof(viewProjection));
+        memcpy(outVP, viewProjection, sizeof(viewProjection));
+        if (outView) {
+            if (!ReadValidMatrix(remoteCall,
+                                 nativeCamera + kNativeCamera_WorldToCamera,
+                                 outView)) {
+                memset(outView, 0, sizeof(float) * 16);
+            }
+        }
+        return true;
+    }
+
+    return false;
+}
+
+static bool ReadCameraVPMatrixFromNative(RemoteCall *remoteCall,
+                                        uintptr_t camera, float *out) {
+    return ReadCameraVPAndWorldMatrix(remoteCall, camera, out, NULL);
+}
+
+static Vector3 GetCameraPositionFromViewMatrix(const float *view) {
+    if (!view)
+        return Vector3::zero();
+    float tx = view[12];
+    float ty = view[13];
+    float tz = view[14];
+    float x = -(view[0] * tx + view[1] * ty + view[2] * tz);
+    float y = -(view[4] * tx + view[5] * ty + view[6] * tz);
+    float z = -(view[8] * tx + view[9] * ty + view[10] * tz);
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
+        return Vector3::zero();
+    return Vector3(x, y, z);
+}
+
+// MARK: - Pure Memory Transform & Entity Position
+
+struct UnityMatrix3x4 {
+    float data[12];
+};
+
+static bool ReadTransformPosition(RemoteCall *remoteCall,
+                                  uintptr_t managedTransform, Vector3 *outPos) {
+    if (!validOffsetPtr(managedTransform) || !remoteCall || !outPos)
+        return false;
+
+    uintptr_t nativeTransform = ReadMemorySafe<uintptr_t>(
+        remoteCall, managedTransform + kUnityObject_CachedPtr);
+    if (!validOffsetPtr(nativeTransform))
+        return false;
+
+    // TransformAccessReadOnly at nativeTransform + 0x38
+    uintptr_t pTransformAccess =
+        ReadMemorySafe<uintptr_t>(remoteCall, nativeTransform + 0x38);
+    int32_t index =
+        ReadMemorySafe<int32_t>(remoteCall, nativeTransform + 0x40);
+
+    if (validOffsetPtr(pTransformAccess) && index >= 0 && index < 20000) {
+        uintptr_t pTransformArray =
+            ReadMemorySafe<uintptr_t>(remoteCall, pTransformAccess + 0x18);
+        if (!validOffsetPtr(pTransformArray)) {
+            pTransformArray =
+                ReadMemorySafe<uintptr_t>(remoteCall, pTransformAccess);
+        }
+
+        if (validOffsetPtr(pTransformArray)) {
+            uintptr_t matrixAddr = pTransformArray + (uintptr_t)index * 48;
+            UnityMatrix3x4 mat = {};
+            if ([remoteCall remoteRead:matrixAddr to:&mat size:sizeof(mat)]) {
+                Vector3 pos(mat.data[3], mat.data[7], mat.data[11]);
+                if (std::isfinite(pos.x) && std::isfinite(pos.y) &&
+                    std::isfinite(pos.z) &&
+                    (fabsf(pos.x) > 0.01f || fabsf(pos.y) > 0.01f ||
+                     fabsf(pos.z) > 0.01f) &&
+                    fabsf(pos.x) < 50000.0f && fabsf(pos.z) < 50000.0f) {
+                    *outPos = pos;
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
+static bool ReadEntityPosition(RemoteCall *remoteCall, uintptr_t entity,
+                               Vector3 *outPos) {
+    if (!validOffsetPtr(entity) || !remoteCall || !outPos)
+        return false;
+
+    // 1. Try Transform
+    uintptr_t transform =
+        ReadMemorySafe<uintptr_t>(remoteCall, entity + kEntity_CachedTransform);
+    if (validOffsetPtr(transform)) {
+        if (ReadTransformPosition(remoteCall, transform, outPos)) {
+            return true;
+        }
+    }
+
+    // 2. Try Vector3 fields in Player / AttackableEntity
+    // Position1 at 0xD0
+    Vector3 v1 = ReadMemorySafe<Vector3>(remoteCall, entity + kPlayer_Position1);
+    if (std::isfinite(v1.x) && std::isfinite(v1.y) && std::isfinite(v1.z) &&
+        (fabsf(v1.x) > 0.1f || fabsf(v1.z) > 0.1f) &&
+        fabsf(v1.x) < 50000.0f && fabsf(v1.z) < 50000.0f) {
+        *outPos = v1;
+        return true;
+    }
+
+    // Position2 at 0x10C
+    Vector3 v2 = ReadMemorySafe<Vector3>(remoteCall, entity + kPlayer_Position2);
+    if (std::isfinite(v2.x) && std::isfinite(v2.y) && std::isfinite(v2.z) &&
+        (fabsf(v2.x) > 0.1f || fabsf(v2.z) > 0.1f) &&
+        fabsf(v2.x) < 50000.0f && fabsf(v2.z) < 50000.0f) {
+        *outPos = v2;
+        return true;
+    }
+
+    // Position3 at 0x270
+    Vector3 v3 = ReadMemorySafe<Vector3>(remoteCall, entity + kPlayer_Position3);
+    if (std::isfinite(v3.x) && std::isfinite(v3.y) && std::isfinite(v3.z) &&
+        (fabsf(v3.x) > 0.1f || fabsf(v3.z) > 0.1f) &&
+        fabsf(v3.x) < 50000.0f && fabsf(v3.z) < 50000.0f) {
+        *outPos = v3;
         return true;
     }
 

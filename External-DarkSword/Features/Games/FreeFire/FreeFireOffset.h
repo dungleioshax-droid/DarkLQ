@@ -59,9 +59,13 @@ inline constexpr uint64_t kNativeCamera_WorldToClip = 0x100;
 inline constexpr uint64_t kEntity_CachedTransform = 0x58;
 inline constexpr uint64_t kPlayer_OriginalNickName = 0x498;
 inline constexpr uint64_t kPlayer_TeamModeID = 0x434;
+inline constexpr uint64_t kPlayer_UserID = 0x4A8;
 inline constexpr uint64_t kPlayer_IsClientBot = 0x4A0;
 inline constexpr uint64_t kPlayer_GetInVehicle = 0x4F8;
 inline constexpr uint64_t kAttackableEntity_IsDeadFlag = 0x7C;
+inline constexpr uint64_t kPlayer_Position1 = 0xD0;
+inline constexpr uint64_t kPlayer_Position2 = 0x10C;
+inline constexpr uint64_t kPlayer_Position3 = 0x270;
 
 // System.Collections.Generic.Dictionary Layout
 inline constexpr uint64_t kDictionary_Buckets = 0x10;

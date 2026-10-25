@@ -98,6 +98,7 @@ NS_ASSUME_NONNULL_BEGIN
     LOG(@"[FreeFire] Starting external snapshot loop...");
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
+      uint32_t overlayCooldown = 0;
       while (self.isRunning && self.remoteCall) {
           @autoreleasepool {
               if (self.binaryBase == 0) {
@@ -110,16 +111,19 @@ NS_ASSUME_NONNULL_BEGIN
 
               if (self.binaryBase != 0) {
                   if (!self.remoteWebViewOverlay.isOverlayReady) {
-                      if (!self.remoteWebViewOverlay) {
-                          self.remoteWebViewOverlay =
-                              [[RemoteWebViewOverlay alloc]
-                                  initWithRemoteCall:self.remoteCall];
-                      }
-                      if ([self.remoteWebViewOverlay setupBaseOverlay]) {
-                          LOG(@"[FreeFire] WKWebView overlay setup done.");
+                      if (overlayCooldown == 0) {
+                          if (!self.remoteWebViewOverlay) {
+                              self.remoteWebViewOverlay =
+                                  [[RemoteWebViewOverlay alloc]
+                                      initWithRemoteCall:self.remoteCall];
+                          }
+                          if ([self.remoteWebViewOverlay setupBaseOverlay]) {
+                              LOG(@"[FreeFire] WKWebView overlay setup done.");
+                          } else {
+                              overlayCooldown = 50; // Throttle retry to ~0.5s
+                          }
                       } else {
-                          LOG(@"[FreeFire] WKWebView overlay setup failed, "
-                              @"will retry.");
+                          overlayCooldown--;
                       }
                   }
 
@@ -267,7 +271,8 @@ NS_ASSUME_NONNULL_BEGIN
             return imageLoadAddress;
         }
 
-        if (strstr(pathBuf, "FreeFire") && freeFireMainBinary == 0) {
+        if ((strcasestr(pathBuf, "freefire") || strstr(pathBuf, "FreeFire")) &&
+            freeFireMainBinary == 0) {
             freeFireMainBinary = imageLoadAddress;
         }
     }
@@ -368,102 +373,66 @@ NS_ASSUME_NONNULL_BEGIN
 
     // 1. Resolve GameFacade static fields
     uintptr_t staticFields = [self resolveGameFacadeStaticFields:remoteCall];
-    uintptr_t currentMatchGame = 0;
-    if (validOffsetPtr(staticFields)) {
-        currentMatchGame = ReadMemorySafe<uintptr_t>(
-            remoteCall, staticFields + kGameFacadeStatic_CurrentMatchGame);
-    }
-
-    // 2. Resolve Local Player
-    uint64_t clpFn = self.binaryBase + kGameFacade_CurrentLocalPlayer;
-    uintptr_t localPlayer = 0;
-    if (checkValidPointer64bits(clpFn)) {
-        localPlayer = (uintptr_t)[remoteCall
-            doRemoteCallStableWithTimeout:3
-                             functionName:(char *)"CurrentLocalPlayer"
-                          functionPointer:(void *)clpFn
-                                     args:NULL
-                                 argCount:0];
-    }
-
-    // 3. Resolve Camera and ViewProjection Matrix
-    float viewProjection[16] = {};
-    BOOL hasMatrix = NO;
-
-    if (validOffsetPtr(currentMatchGame)) {
-        uintptr_t camMgr = ReadMemorySafe<uintptr_t>(
-            remoteCall, currentMatchGame + kMatchGame_CameraControllerManager);
-        if (validOffsetPtr(camMgr)) {
-            uintptr_t camera = ReadMemorySafe<uintptr_t>(
-                remoteCall, camMgr + kCameraControllerManager_MainCamera);
-            if (validOffsetPtr(camera)) {
-                hasMatrix = ReadCameraVPMatrixFromNative(remoteCall, camera,
-                                                        viewProjection);
-            }
-        }
-    }
-
-    if (!hasMatrix) {
-        // Fallback: Camera.get_main()
-        uint64_t getMainFn = self.binaryBase + kCamera_GetMain;
-        if (checkValidPointer64bits(getMainFn)) {
-            uintptr_t mainCam = (uintptr_t)[remoteCall
-                doRemoteCallStableWithTimeout:3
-                                 functionName:(char *)"Camera_get_main"
-                              functionPointer:(void *)getMainFn
-                                         args:NULL
-                                     argCount:0];
-            if (validOffsetPtr(mainCam)) {
-                hasMatrix = ReadCameraVPMatrixFromNative(remoteCall, mainCam,
-                                                        viewProjection);
-            }
-        }
-    }
-
-    if (!hasMatrix) {
+    if (!validOffsetPtr(staticFields)) {
         @synchronized(self) {
             self.hasValidFrame = NO;
         }
         return;
     }
 
-    // Local player position & team
-    uint32_t hostTeamID = 0;
-    Vector3 hostPosition = Vector3::zero();
-    BOOL hasHostPosition = NO;
-
-    if (validOffsetPtr(localPlayer)) {
-        hostTeamID = ReadMemorySafe<uint32_t>(
-            remoteCall, localPlayer + kPlayer_TeamModeID);
-        uintptr_t hostTransform = ReadMemorySafe<uintptr_t>(
-            remoteCall, localPlayer + kEntity_CachedTransform);
-        if (validOffsetPtr(hostTransform)) {
-            uint64_t scratch = [remoteCall trojanMem] + 0x2000;
-            uint64_t getPosFn = self.binaryBase + kTransform_GetPositionInjected;
-            uint64_t posArgs[2] = {hostTransform, scratch};
-            if (checkValidPointer64bits(getPosFn)) {
-                [remoteCall doRemoteCallStableWithTimeout:2
-                                             functionName:(char *)"get_position"
-                                          functionPointer:(void *)getPosFn
-                                                     args:posArgs
-                                                 argCount:2];
-                if ([remoteCall remoteRead:scratch
-                                        to:&hostPosition
-                                      size:sizeof(hostPosition)]) {
-                    hasHostPosition = YES;
-                }
-            }
-        }
-    }
-
-    // 4. Read Entities from MatchGame.m_ReplicationEntitis
+    // 2. Read CurrentMatchGame
+    // If NULL, the game is in lobby, login screen, or loading screen -> DO NOTHING!
+    uintptr_t currentMatchGame = ReadMemorySafe<uintptr_t>(
+        remoteCall, staticFields + kGameFacadeStatic_CurrentMatchGame);
     if (!validOffsetPtr(currentMatchGame)) {
         @synchronized(self) {
             self.hasValidFrame = NO;
+            [self clearOverlayTargets];
         }
         return;
     }
 
+    // 3. Resolve Camera and ViewProjection Matrix (100% PURE MEMORY READ)
+    uintptr_t camMgr = ReadMemorySafe<uintptr_t>(
+        remoteCall, currentMatchGame + kMatchGame_CameraControllerManager);
+    if (!validOffsetPtr(camMgr)) {
+        @synchronized(self) {
+            self.hasValidFrame = NO;
+        }
+        return;
+    }
+
+    uintptr_t camera = ReadMemorySafe<uintptr_t>(
+        remoteCall, camMgr + kCameraControllerManager_MainCamera);
+    if (!validOffsetPtr(camera)) {
+        camera = ReadMemorySafe<uintptr_t>(
+            remoteCall, camMgr + kCameraControllerManager_SubCamera);
+    }
+    if (!validOffsetPtr(camera)) {
+        @synchronized(self) {
+            self.hasValidFrame = NO;
+        }
+        return;
+    }
+
+    float viewProjection[16] = {};
+    float viewMatrix[16] = {};
+    if (!ReadCameraVPAndWorldMatrix(remoteCall, camera, viewProjection, viewMatrix)) {
+        @synchronized(self) {
+            self.hasValidFrame = NO;
+        }
+        return;
+    }
+
+    // Camera world position (origin of camera in 3D)
+    Vector3 cameraPos = GetCameraPositionFromViewMatrix(viewMatrix);
+
+    // Local player identification (by user ID)
+    uint64_t localUserID = ReadMemorySafe<uint64_t>(
+        remoteCall, staticFields + kGameFacadeStatic_LocalPlayerUserID);
+    uint32_t hostTeamID = 0;
+
+    // 4. Read Entities from MatchGame.m_ReplicationEntitis
     uintptr_t repDict = ReadMemorySafe<uintptr_t>(
         remoteCall, currentMatchGame + kMatchGame_ReplicationEntities);
     if (!validOffsetPtr(repDict)) {
@@ -502,11 +471,33 @@ NS_ASSUME_NONNULL_BEGIN
         sh = kHeight;
     }
 
+    // Pass 1: find hostTeamID if localUserID is known
+    if (localUserID != 0) {
+        for (int32_t i = 0; i < loopLimit; ++i) {
+            uintptr_t entryAddr =
+                entriesArray + kArray_Vector + (uint64_t)i * kEntry_Size;
+            int32_t hashCode =
+                ReadMemorySafe<int32_t>(remoteCall, entryAddr + kEntry_HashCode);
+            if (hashCode < 0)
+                continue;
+
+            uintptr_t entity =
+                ReadMemorySafe<uintptr_t>(remoteCall, entryAddr + kEntry_Value);
+            if (!validOffsetPtr(entity))
+                continue;
+
+            uint64_t uid = ReadMemorySafe<uint64_t>(
+                remoteCall, entity + kPlayer_UserID);
+            if (uid == localUserID) {
+                hostTeamID = ReadMemorySafe<uint32_t>(
+                    remoteCall, entity + kPlayer_TeamModeID);
+                break;
+            }
+        }
+    }
+
     NSMutableArray<FreeFireEntitySnapshot *> *entities =
         [NSMutableArray array];
-
-    uint64_t scratchPos = [remoteCall trojanMem] + 0x2100;
-    uint64_t getPosFn = self.binaryBase + kTransform_GetPositionInjected;
 
     for (int32_t i = 0; i < loopLimit; ++i) {
         uintptr_t entryAddr =
@@ -518,8 +509,16 @@ NS_ASSUME_NONNULL_BEGIN
 
         uintptr_t entity =
             ReadMemorySafe<uintptr_t>(remoteCall, entryAddr + kEntry_Value);
-        if (!validOffsetPtr(entity) || entity == localPlayer)
+        if (!validOffsetPtr(entity))
             continue;
+
+        // Skip local player
+        if (localUserID != 0) {
+            uint64_t uid = ReadMemorySafe<uint64_t>(
+                remoteCall, entity + kPlayer_UserID);
+            if (uid == localUserID)
+                continue;
+        }
 
         // Check if Entity is Player
         uintptr_t klass = ReadMemorySafe<uintptr_t>(remoteCall, entity);
@@ -546,52 +545,16 @@ NS_ASSUME_NONNULL_BEGIN
         if (isDead != 0)
             continue;
 
-        // Check Team
+        // Check Team (skip teammates)
         uint32_t teamID =
             ReadMemorySafe<uint32_t>(remoteCall, entity + kPlayer_TeamModeID);
         if (hostTeamID != 0 && teamID == hostTeamID)
-            continue; // Skip teammates
-
-        // Read Position from Transform
-        uintptr_t transform = ReadMemorySafe<uintptr_t>(
-            remoteCall, entity + kEntity_CachedTransform);
-        Vector3 pos = Vector3::zero();
-        BOOL hasPos = NO;
-
-        if (validOffsetPtr(transform) && checkValidPointer64bits(getPosFn)) {
-            uint64_t posArgs[2] = {transform, scratchPos};
-            [remoteCall doRemoteCallStableWithTimeout:2
-                                         functionName:(char *)"get_pos"
-                                      functionPointer:(void *)getPosFn
-                                                 args:posArgs
-                                             argCount:2];
-            if ([remoteCall remoteRead:scratchPos
-                                    to:&pos
-                                  size:sizeof(pos)]) {
-                hasPos = YES;
-            }
-        }
-
-        if (!hasPos)
             continue;
 
-        // Read Health
-        int32_t curHP = 200;
-        int32_t maxHP = 200;
-        uint64_t getHpFn = self.binaryBase + kPlayer_GetCurHP;
-        if (checkValidPointer64bits(getHpFn)) {
-            uint64_t hpArgs[1] = {entity};
-            uint64_t hpVal = [remoteCall
-                doRemoteCallStableWithTimeout:2
-                                 functionName:(char *)"get_CurHP"
-                              functionPointer:(void *)getHpFn
-                                         args:hpArgs
-                                     argCount:1];
-            curHP = (int32_t)hpVal;
-        }
-
-        if (curHP <= 0)
-            continue; // Dead player
+        // Read Position using Pure Memory Reads
+        Vector3 pos = Vector3::zero();
+        if (!ReadEntityPosition(remoteCall, entity, &pos))
+            continue;
 
         // Read Name
         uintptr_t nameStr = ReadMemorySafe<uintptr_t>(
@@ -600,6 +563,9 @@ NS_ASSUME_NONNULL_BEGIN
         if (playerName.length == 0) {
             playerName = @"Player";
         }
+
+        // Distance from camera to player
+        float distance = Vector3::Distance(cameraPos, pos);
 
         // Project Foot & Head
         Vector3 headWorld = Vector3(pos.x, pos.y + 1.8f, pos.z);
@@ -622,15 +588,14 @@ NS_ASSUME_NONNULL_BEGIN
         FreeFireEntitySnapshot *snapshot = [FreeFireEntitySnapshot new];
         snapshot.actorAddress = entity;
         snapshot.position = pos;
-        snapshot.health = curHP;
-        snapshot.maxHealth = maxHP;
+        snapshot.health = 200;
+        snapshot.maxHealth = 200;
         snapshot.name = playerName;
         snapshot.screenX = screenX;
         snapshot.screenY = screenY;
         snapshot.visible = YES;
         snapshot.onScreen = IsScreenPointInside(screenX, screenY, sw, sh);
-        snapshot.distance =
-            hasHostPosition ? Vector3::Distance(hostPosition, pos) : 0.0f;
+        snapshot.distance = distance;
 
         if (headVisible && footVisible) {
             snapshot.headX = headSX;
