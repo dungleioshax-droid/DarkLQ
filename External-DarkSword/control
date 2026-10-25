@@ -1,0 +1,9 @@
+Package: com.letiendat.mod-darksword
+Name: Mod Darksword
+Version: 0.0.1
+Architecture: iphoneos-arm
+Description: Mod external by DarkSword!
+Maintainer: Le Tien Dat
+Author: Le Tien Dat
+Section: Utilities
+Depends: firmware (>= 14.0)

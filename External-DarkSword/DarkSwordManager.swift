@@ -1,0 +1,1516 @@
+//
+//  DarkSwordManager.swift
+//  External-DarkSword
+//
+//  Created by Le Tien Dat on 8/3/26.
+//
+
+import Darwin
+import Foundation
+import UIKit
+
+struct DarkSwordSupportStatus {
+    let osVersion: String
+    let deviceIdentifier: String
+    let debuggerAttached: Bool
+    let isSupported: Bool
+    let reason: String
+
+    var stateText: String {
+        isSupported ? "Supported" : "Blocked"
+    }
+
+    static func current() -> DarkSwordSupportStatus {
+        let osVersion = UIDevice.current.systemVersion
+        let deviceIdentifier = Self.machineIdentifier()
+        let version = Version(osVersion)
+        let supportedOS =
+            (version >= Version(17, 0, 0) && version <= Version(18, 7, 1))
+            || (version >= Version(26, 0, 0) && version < Version(26, 1, 0))
+        let excludedChip = Self.isExcludedA19OrM5Device(deviceIdentifier)
+        let debuggerAttached = Self.isDebuggerAttached()
+
+        if !supportedOS {
+            return DarkSwordSupportStatus(
+                osVersion: osVersion,
+                deviceIdentifier: deviceIdentifier,
+                debuggerAttached: debuggerAttached,
+                isSupported: false,
+                reason: "Only iOS 17.0-18.7.1 and iOS 26.0.x are supported."
+            )
+        }
+
+        if excludedChip {
+            return DarkSwordSupportStatus(
+                osVersion: osVersion,
+                deviceIdentifier: deviceIdentifier,
+                debuggerAttached: debuggerAttached,
+                isSupported: false,
+                reason: "A19 and M5 devices are not supported."
+            )
+        }
+
+        if debuggerAttached {
+            return DarkSwordSupportStatus(
+                osVersion: osVersion,
+                deviceIdentifier: deviceIdentifier,
+                debuggerAttached: true,
+                isSupported: false,
+                reason:
+                    "DarkSword and RemoteCall are not available while a debugger is attached. Launch the sideloaded app directly from the Home Screen."
+            )
+        }
+
+        return DarkSwordSupportStatus(
+            osVersion: osVersion,
+            deviceIdentifier: deviceIdentifier,
+            debuggerAttached: false,
+            isSupported: true,
+            reason: "Ready for DarkSword."
+        )
+    }
+
+    private static func isExcludedA19OrM5Device(_ identifier: String) -> Bool {
+        identifier.hasPrefix("iPhone18,") || identifier.hasPrefix("iPad17,")
+    }
+
+    private static func machineIdentifier() -> String {
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        var machine = systemInfo.machine
+        return withUnsafeBytes(of: &machine) { buffer in
+            let pointer = buffer.bindMemory(to: CChar.self).baseAddress
+            return pointer.map { String(cString: $0) } ?? "unknown"
+        }
+    }
+
+    private static func isDebuggerAttached() -> Bool {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
+        let result = sysctl(&mib, u_int(mib.count), &info, &size, nil, 0)
+        guard result == 0 else { return false }
+
+        let tracedFlag: Int32 = 0x0000_0800
+        return (info.kp_proc.p_flag & tracedFlag) != 0
+    }
+
+    private struct Version: Comparable {
+        let major: Int
+        let minor: Int
+        let patch: Int
+
+        init(_ major: Int, _ minor: Int, _ patch: Int) {
+            self.major = major
+            self.minor = minor
+            self.patch = patch
+        }
+
+        init(_ text: String) {
+            let parts = text.split(separator: ".").map { Int($0) ?? 0 }
+            self.major = parts.indices.contains(0) ? parts[0] : 0
+            self.minor = parts.indices.contains(1) ? parts[1] : 0
+            self.patch = parts.indices.contains(2) ? parts[2] : 0
+        }
+
+        static func < (lhs: Version, rhs: Version) -> Bool {
+            if lhs.major != rhs.major { return lhs.major < rhs.major }
+            if lhs.minor != rhs.minor { return lhs.minor < rhs.minor }
+            return lhs.patch < rhs.patch
+        }
+    }
+}
+
+struct GameStatusInfo: Identifiable {
+    let name: String
+    let bundleIdentifier: String
+    let processName: String
+    let isInstalled: Bool
+    let isRunning: Bool
+
+    var id: String { bundleIdentifier }
+}
+
+final class DarkSwordManager: ObservableObject {
+    enum KernelState: String {
+        case idle = "Idle"
+        case running = "Running"
+        case ready = "Ready"
+        case failed = "Failed"
+    }
+
+    private enum DefaultsKey {
+        static let targetProcess = "remote.targetProcess"
+        static let useMigFilterBypass = "remote.useMigFilterBypass"
+        static let aovProcess = "aov.process"
+        static let aovESPEnabled = "aov.esp.enabled"
+        static let aovHackMapEnabled = "aov.hackMap.enabled"
+        static let aovShowsLine = "aov.esp.showsLine"
+        static let aovShowsBox = "aov.esp.showsBox"
+        static let aovShowsHealth = "aov.esp.showsHealth"
+        static let aovShowsName = "aov.esp.showsName"
+        static let aovShowsDistance = "aov.esp.showsDistance"
+        static let aovCameraHeight = "aov.camera.height"
+    }
+
+    private enum DefaultsFallback {
+        static let targetProcess = "kgvn"
+        static let useMigFilterBypass = true
+        static let aovProcess = "kgvn"
+        static let aovESPEnabled = false
+        static let aovHackMapEnabled = false
+        static let aovShowsLine = false
+        static let aovShowsBox = false
+        static let aovShowsHealth = false
+        static let aovShowsName = false
+        static let aovShowsDistance = false
+        static let aovCameraHeight = 1.0
+    }
+
+    private static let aovCameraHeightMinValue: Double = 1
+    private static let aovCameraHeightMaxValue: Double = 10
+
+    private static func resolvedAoVCameraHeight() -> Double {
+        let value = AppUserDefaults.double(
+            forKey: DefaultsKey.aovCameraHeight,
+            fallbackValue: DefaultsFallback.aovCameraHeight
+        )
+        guard value.isFinite else { return DefaultsFallback.aovCameraHeight }
+        return min(
+            max(value, aovCameraHeightMinValue),
+            aovCameraHeightMaxValue
+        )
+    }
+
+    @Published var kernelState: KernelState = .idle
+    @Published var progress: Double = 0
+    @Published var kernelBaseText = "-"
+    @Published var kernelSlideText = "-"
+    @Published var targetProcess = AppUserDefaults.string(
+        forKey: DefaultsKey.targetProcess,
+        fallbackValue: DefaultsFallback.targetProcess
+    ) {
+        didSet {
+            AppUserDefaults.setString(
+                targetProcess,
+                forKey: DefaultsKey.targetProcess
+            )
+        }
+    }
+    @Published var useMigFilterBypass = AppUserDefaults.bool(
+        forKey: DefaultsKey.useMigFilterBypass,
+        fallbackValue: DefaultsFallback.useMigFilterBypass
+    ) {
+        didSet {
+            AppUserDefaults.setBool(
+                useMigFilterBypass,
+                forKey: DefaultsKey.useMigFilterBypass
+            )
+        }
+    }
+    @Published var remoteConnected = false
+    @Published var connectedProcess = ""
+    @Published var remoteError = ""
+    @Published var symbolName = "getpid"
+    @Published var argumentText = ""
+    @Published var timeoutText = "5"
+    @Published var lastCallResult = "-"
+    @Published var isBusy = false
+    @Published var logText = ""
+    @Published private(set) var supportStatus = DarkSwordSupportStatus.current()
+    @Published private(set) var offsetsInitialized = false
+    @Published private(set) var kernelSymbolOffsetsReady = false
+    @Published private(set) var selfProcessReady = false
+    @Published var isKeepAliveEnabled = false
+    @Published private(set) var overlaySocketClientCount = 0
+    @Published private(set) var gameStatusVersion = 0
+    @Published private(set) var isOpeningAoV = false
+
+    @Published var aovProcess = AppUserDefaults.string(
+        forKey: DefaultsKey.aovProcess,
+        fallbackValue: DefaultsFallback.aovProcess
+    ) {
+        didSet {
+            AppUserDefaults.setString(
+                aovProcess,
+                forKey: DefaultsKey.aovProcess
+            )
+        }
+    }
+    @Published var aovScanResult = "-"
+    @Published var aovProbeResult = "-"
+    @Published var aovStatus = "Idle"
+
+    @Published var aovESPEnabled = AppUserDefaults.bool(
+        forKey: DefaultsKey.aovESPEnabled,
+        fallbackValue: DefaultsFallback.aovESPEnabled
+    ) {
+        didSet {
+            AppUserDefaults.setBool(
+                aovESPEnabled,
+                forKey: DefaultsKey.aovESPEnabled
+            )
+            syncAoVESPOptions()
+        }
+    }
+    @Published var aovHackMapEnabled = AppUserDefaults.bool(
+        forKey: DefaultsKey.aovHackMapEnabled,
+        fallbackValue: DefaultsFallback.aovHackMapEnabled
+    ) {
+        didSet {
+            AppUserDefaults.setBool(
+                aovHackMapEnabled,
+                forKey: DefaultsKey.aovHackMapEnabled
+            )
+            syncAoVESPOptions()
+        }
+    }
+    @Published var aovShowsLine = AppUserDefaults.bool(
+        forKey: DefaultsKey.aovShowsLine,
+        fallbackValue: DefaultsFallback.aovShowsLine
+    ) {
+        didSet {
+            AppUserDefaults.setBool(
+                aovShowsLine,
+                forKey: DefaultsKey.aovShowsLine
+            )
+            syncAoVESPOptions()
+        }
+    }
+    @Published var aovShowsBox = AppUserDefaults.bool(
+        forKey: DefaultsKey.aovShowsBox,
+        fallbackValue: DefaultsFallback.aovShowsBox
+    ) {
+        didSet {
+            AppUserDefaults.setBool(
+                aovShowsBox,
+                forKey: DefaultsKey.aovShowsBox
+            )
+            syncAoVESPOptions()
+        }
+    }
+    @Published var aovShowsHealth = AppUserDefaults.bool(
+        forKey: DefaultsKey.aovShowsHealth,
+        fallbackValue: DefaultsFallback.aovShowsHealth
+    ) {
+        didSet {
+            AppUserDefaults.setBool(
+                aovShowsHealth,
+                forKey: DefaultsKey.aovShowsHealth
+            )
+            syncAoVESPOptions()
+        }
+    }
+    @Published var aovShowsName = AppUserDefaults.bool(
+        forKey: DefaultsKey.aovShowsName,
+        fallbackValue: DefaultsFallback.aovShowsName
+    ) {
+        didSet {
+            AppUserDefaults.setBool(
+                aovShowsName,
+                forKey: DefaultsKey.aovShowsName
+            )
+            syncAoVESPOptions()
+        }
+    }
+    @Published var aovShowsDistance = AppUserDefaults.bool(
+        forKey: DefaultsKey.aovShowsDistance,
+        fallbackValue: DefaultsFallback.aovShowsDistance
+    ) {
+        didSet {
+            AppUserDefaults.setBool(
+                aovShowsDistance,
+                forKey: DefaultsKey.aovShowsDistance
+            )
+            syncAoVESPOptions()
+        }
+    }
+    @Published var aovCameraHeight: Double =
+        DarkSwordManager.resolvedAoVCameraHeight()
+    {
+        didSet {
+            AppUserDefaults.setDouble(
+                aovCameraHeight,
+                forKey: DefaultsKey.aovCameraHeight
+            )
+            syncAoVESPOptions()
+        }
+    }
+
+    let aovCameraHeightMin: Double = DarkSwordManager.aovCameraHeightMinValue
+    let aovCameraHeightMax: Double = DarkSwordManager.aovCameraHeightMaxValue
+
+    let aovBundleIdentifier = "com.garena.game.kgvn"
+
+    var isSupportedDevice: Bool {
+        supportStatus.isSupported
+    }
+
+    var isExploitReady: Bool {
+        supportStatus.isSupported && kernelState == .ready
+            && kernelSymbolOffsetsReady && selfProcessReady
+    }
+
+    var isToolingAvailable: Bool {
+        isExploitReady
+    }
+
+    var isDebug: Bool {
+        g_isDebug
+    }
+
+    var canContinueToGames: Bool {
+        kernelState == .ready && isExploitReady
+    }
+
+    var isConnectedToAoV: Bool {
+        let process = aovProcess.trimmingCharacters(in: .whitespacesAndNewlines)
+        return remoteConnected && connectedProcess == process
+    }
+
+    var aovGameCellStatus: String? {
+        if isOpeningAoV {
+            return "Opening"
+        }
+        return nil
+    }
+
+    private var remoteCall: RemoteCall?
+    private var aovManager: AoVManager?
+    private let workerQueue = DispatchQueue(
+        label: "external.darksword.worker",
+        qos: .userInitiated
+    )
+    private static weak var activeManager: DarkSwordManager?
+    private static let kernelRunLock = NSLock()
+    private static var isKernelRunClaimed = false
+    private static let offsetsLock = NSLock()
+    private static var sharedOffsetsInitialized = false
+
+    init() {
+        DarkSwordManager.activeManager = self
+        configureOverlaySocketCallbacks()
+        ds_set_log_callback { message in
+            guard let message else { return }
+            DarkSwordManager.activeManager?.appendLog(String(cString: message))
+        }
+        ds_set_progress_callback { progress in
+            DispatchQueue.main.async {
+                DarkSwordManager.activeManager?.progress = progress
+            }
+        }
+
+        prepareOffsetsIfNeeded()
+        kernelSymbolOffsetsReady =
+            emergencyfixfunctiontobereplacedlateronquestionmark()
+        if !kernelSymbolOffsetsReady {
+            appendLog(
+                "Kernel symbol offsets are not resolved yet. They will be resolved before DarkSword runs."
+            )
+        }
+
+        if supportStatus.debuggerAttached {
+            appendLog(
+                "Debugger detected. This launch context is blocked to match External DarkSword's RemoteCall requirements."
+            )
+        }
+
+        if ds_is_ready() {
+            kernelState = .ready
+            refreshKernelInfo()
+            _ = refreshSelfProcessState(logIfUnavailable: false)
+            startKeepAlive()
+        }
+    }
+
+    deinit {
+        if remoteCall != nil {
+            _ = remoteCall?.destroy()
+        }
+    }
+
+    func initializeDarkSword() {
+        guard !isBusy else { return }
+        guard Self.claimKernelRun() else {
+            appendLog("DarkSword is already running in this process.")
+            return
+        }
+        guard allowSupportedAction("DarkSword initialization") else {
+            Self.releaseKernelRun()
+            return
+        }
+        guard prepareOffsetsIfNeeded() else {
+            Self.releaseKernelRun()
+            return
+        }
+
+        if ds_is_ready() {
+            let processReady = refreshSelfProcessState(logIfUnavailable: false)
+            kernelState =
+                kernelSymbolOffsetsReady && processReady ? .ready : .failed
+            refreshKernelInfo()
+            appendLog("DarkSword is already ready.")
+            Self.releaseKernelRun()
+            return
+        }
+
+        isBusy = true
+        kernelState = .running
+        progress = 0
+        appendLog("Starting DarkSword...")
+
+        workerQueue.async { [weak self] in
+            guard let self else {
+                Self.releaseKernelRun()
+                return
+            }
+            defer { Self.releaseKernelRun() }
+            let symbolsReady = self.resolveKernelSymbolOffsetsIfNeeded()
+            guard symbolsReady else {
+                DispatchQueue.main.async {
+                    self.isBusy = false
+                    self.kernelState = .failed
+                    self.stopKeepAlive()
+                    self.remoteError =
+                        "Kernel symbol offsets are required for process lookup."
+                    self.appendLog(
+                        "DarkSword blocked: kernel symbol offsets could not be resolved."
+                    )
+                }
+                return
+            }
+
+            let result = ds_run()
+            let ready = ds_is_ready()
+            let base = ds_get_kernel_base()
+            let slide = ds_get_kernel_slide()
+
+            DispatchQueue.main.async {
+                self.isBusy = false
+                self.progress = ready ? 1 : self.progress
+                self.kernelBaseText = Self.hex(base)
+                self.kernelSlideText = Self.hex(slide)
+                let processReady =
+                    self.refreshSelfProcessState(logIfUnavailable: ready)
+                self.kernelState =
+                    result == 0 && ready && processReady ? .ready : .failed
+
+                if self.kernelState == .ready {
+                    self.startKeepAlive()
+                }
+
+                self.appendLog(
+                    "DarkSword finished with result \(result), ready=\(ready)."
+                )
+            }
+        }
+    }
+
+    func connectRemoteCall(processName: String? = nil) {
+        guard !isBusy else { return }
+        guard allowSupportedAction("RemoteCall connect") else { return }
+        guard allowToolingAction("RemoteCall connect") else { return }
+        let process = (processName ?? targetProcess).trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !process.isEmpty else {
+            remoteError = "Process name is empty."
+            return
+        }
+
+        isBusy = true
+        remoteError = ""
+        connectedProcess = ""
+        let mig = useMigFilterBypass
+        appendLog("Connecting RemoteCall to \(process) (migBypass=\(mig))...")
+
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+
+            let kaddr = process.withCString { procbyname($0) }
+            if kaddr == 0 {
+                DispatchQueue.main.async {
+                    let isAoVProcess =
+                        process
+                        == self.aovProcess.trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        )
+                    self.remoteCall = nil
+                    self.remoteConnected = false
+                    self.connectedProcess = ""
+                    self.remoteError = "Unable to find process: \(process)"
+                    self.isBusy = false
+                    self.aovStatus = "Connect failed"
+                    if isAoVProcess {
+                        self.isOpeningAoV = false
+                    }
+                    self.appendLog(
+                        "RemoteCall failed: process \"\(process)\" not found (procbyname)."
+                    )
+                    self.broadcastOverlayState()
+                }
+                return
+            }
+
+            let pid = ds_kread32(kaddr + UInt64(off_proc_p_pid))
+            DispatchQueue.main.async {
+                self.appendLog(
+                    "RemoteCall target resolved: pid=\(pid) kaddr=\(Self.hex(kaddr))"
+                )
+            }
+
+            let instance = RemoteCall(
+                process: process,
+                useMigFilterBypass: mig
+            )
+            let error = RemoteCall.lastInitError() ?? ""
+            let connected = instance != nil && error.isEmpty
+
+            DispatchQueue.main.async {
+                let isAoVProcess =
+                    process
+                    == self.aovProcess.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    )
+                self.remoteCall = connected ? instance : nil
+                self.remoteConnected = connected
+                self.connectedProcess = connected ? process : ""
+                self.remoteError =
+                    connected
+                    ? ""
+                    : (error.isEmpty ? "RemoteCall init returned nil" : error)
+                self.isBusy = false
+
+                if connected {
+                    if let instance, isAoVProcess {
+                        let manager = AoVManager(remoteCall: instance)
+                        self.aovManager = manager
+                        self.aovStatus = "Connected to \(process)"
+                        self.isOpeningAoV = false
+                        self.syncAoVESPOptions()
+                        manager.runLoop()
+                    } else {
+                        self.aovStatus = "Connected to \(process)"
+                    }
+                } else {
+                    self.aovStatus = "Connect failed"
+                    if isAoVProcess {
+                        self.isOpeningAoV = false
+                    }
+                }
+
+                self.appendLog(
+                    connected
+                        ? "RemoteCall connected to \(process)."
+                        : "RemoteCall failed: \(self.remoteError)"
+                )
+                self.broadcastOverlayState()
+            }
+        }
+    }
+
+    func disconnectRemoteCall() {
+        guard !isBusy else { return }
+        guard let remoteCall else { return }
+
+        isBusy = true
+        aovStatus = "Disconnecting..."
+        appendLog("Disconnecting RemoteCall...")
+        aovManager?.stopLoop()
+
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            usleep(50_000)
+            let result = remoteCall.destroy()
+            DispatchQueue.main.async {
+                self.aovManager = nil
+                self.remoteCall = nil
+                self.remoteConnected = false
+                self.connectedProcess = ""
+                self.isOpeningAoV = false
+                self.aovStatus = "Disconnected"
+                self.isBusy = false
+                self.appendLog("RemoteCall destroy result: \(result).")
+                self.broadcastOverlayState()
+            }
+        }
+    }
+
+    func runRemoteCall() {
+        guard !isBusy else { return }
+        guard allowSupportedAction("RemoteCall") else { return }
+        guard allowToolingAction("RemoteCall") else { return }
+        guard let remoteCall else {
+            remoteError = "RemoteCall is not connected."
+            return
+        }
+
+        let symbol = symbolName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !symbol.isEmpty else {
+            remoteError = "Symbol name is empty."
+            return
+        }
+
+        let timeout =
+            Int32(timeoutText.trimmingCharacters(in: .whitespacesAndNewlines))
+            ?? 5
+        let parsedArgs: [UInt64]
+        do {
+            parsedArgs = try parseArguments(argumentText)
+        } catch {
+            remoteError = error.localizedDescription
+            return
+        }
+
+        guard
+            let pointer = dlsym(UnsafeMutableRawPointer(bitPattern: -2), symbol)
+        else {
+            remoteError = "Cannot resolve local symbol: \(symbol)."
+            return
+        }
+        let pointerAddress = UInt(bitPattern: pointer)
+        let argCount = UInt(parsedArgs.count)
+
+        isBusy = true
+        remoteError = ""
+        appendLog(
+            "Calling \(symbol)(\(parsedArgs.map(Self.hex).joined(separator: ", ")))..."
+        )
+
+        workerQueue.async { [weak self] in
+            var args = parsedArgs
+            let result: UInt
+            result = symbol.withCString { symbolCString in
+                args.withUnsafeMutableBufferPointer { buffer in
+                    let functionPointer = UnsafeMutableRawPointer(
+                        bitPattern: pointerAddress
+                    )
+                    return remoteCall.doStable(
+                        withTimeout: timeout,
+                        functionName: UnsafeMutablePointer(
+                            mutating: symbolCString
+                        ),
+                        functionPointer: functionPointer,
+                        args: buffer.baseAddress,
+                        argCount: argCount
+                    )
+                }
+            }
+
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isBusy = false
+                self.lastCallResult = Self.hex(UInt64(result))
+                self.appendLog("RemoteCall result: \(self.lastCallResult).")
+            }
+        }
+    }
+
+    func clearLog() {
+        logText = ""
+    }
+
+    func scanAoVProcess() {
+        guard !isBusy else { return }
+        guard allowSupportedAction("Liên Quân scan") else { return }
+        guard allowToolingAction("Liên Quân scan") else { return }
+
+        let process = aovProcess.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !process.isEmpty else {
+            remoteError = "Liên Quân process name is empty."
+            aovStatus = "Name empty"
+            return
+        }
+
+        isBusy = true
+        remoteError = ""
+        aovStatus = "Scanning..."
+        appendLog("Scanning processes for \"\(process)\"...")
+
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            let kaddr = process.withCString { procbyname($0) }
+            var line: String?
+            if kaddr != 0 {
+                let pid = ds_kread32(kaddr + UInt64(off_proc_p_pid))
+                line = "pid=\(pid) name=\(process) kaddr=\(Self.hex(kaddr))"
+            }
+
+            DispatchQueue.main.async {
+                self.isBusy = false
+                if let line {
+                    self.aovScanResult = line
+                    self.aovStatus = "Found"
+                    self.appendLog("Liên Quân scan (1):\n\(line)")
+                } else {
+                    self.aovScanResult = "Not found for \"\(process)\""
+                    self.aovStatus = "Process missing"
+                    self.appendLog("Liên Quân scan: no matching process.")
+                }
+            }
+        }
+    }
+
+    func connectAoVRemoteCall() {
+        let process = aovProcess.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !process.isEmpty else {
+            remoteError = "Liên Quân process name is empty."
+            aovStatus = "Name empty"
+            return
+        }
+        aovStatus = "Connecting..."
+        connectRemoteCall(processName: process)
+    }
+
+    private func syncAoVESPOptions() {
+        guard let aovManager else { return }
+        aovManager.isESPEnabled = aovESPEnabled
+        aovManager.isHackMapEnabled = aovHackMapEnabled
+        aovManager.showsLine = aovShowsLine
+        aovManager.showsBox = aovShowsBox
+        aovManager.showsHealth = aovShowsHealth
+        aovManager.showsName = aovShowsName
+        aovManager.showsDistance = aovShowsDistance
+        aovManager.cameraHeight = aovCameraHeight
+        if !aovESPEnabled {
+            aovManager.clearOverlayTargets()
+        }
+        broadcastOverlayState()
+    }
+
+    func openAoVAndConnect() {
+        guard !isBusy else { return }
+        guard allowSupportedAction("Liên Quân Open & Connect") else { return }
+        guard allowToolingAction("Liên Quân Open & Connect") else { return }
+
+        let process = aovProcess.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !process.isEmpty else {
+            remoteError = "Liên Quân process name is empty."
+            aovStatus = "Name empty"
+            return
+        }
+
+        if remoteConnected && connectedProcess != process {
+            disconnectRemoteCallThenOpenAoV(process: process)
+            return
+        }
+
+        openAoVAndConnectAfterRemoteReady(
+            process: process,
+            shouldConnectAfterLaunch: !remoteConnected
+        )
+    }
+
+    private func disconnectRemoteCallThenOpenAoV(process: String) {
+        guard let remoteCall else {
+            openAoVAndConnectAfterRemoteReady(
+                process: process,
+                shouldConnectAfterLaunch: true
+            )
+            return
+        }
+
+        isBusy = true
+        remoteError = ""
+        isOpeningAoV = true
+        aovScanResult = "Disconnecting \(connectedProcess)..."
+        aovStatus = "Opening"
+        broadcastOverlayState()
+        appendLog(
+            "Disconnecting \(connectedProcess), then opening \(aovBundleIdentifier)..."
+        )
+        aovManager?.stopLoop()
+
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            usleep(50_000)
+            let result = remoteCall.destroy()
+            DispatchQueue.main.async {
+                self.aovManager = nil
+                self.remoteCall = nil
+                self.remoteConnected = false
+                self.connectedProcess = ""
+                self.appendLog("RemoteCall destroy result: \(result).")
+                self.openAoVAndConnectAfterRemoteReady(
+                    process: process,
+                    shouldConnectAfterLaunch: true
+                )
+            }
+        }
+    }
+
+    private func openAoVAndConnectAfterRemoteReady(
+        process: String,
+        shouldConnectAfterLaunch: Bool
+    ) {
+        isBusy = true
+        remoteError = ""
+        isOpeningAoV = true
+        aovScanResult = "Opening \(aovBundleIdentifier)..."
+        aovStatus = "Opening"
+        broadcastOverlayState()
+        appendLog(
+            "Opening \(aovBundleIdentifier), then connecting to \(process) in 3 seconds..."
+        )
+
+        guard launchApplication(bundleIdentifier: aovBundleIdentifier) else {
+            isBusy = false
+            isOpeningAoV = false
+            aovStatus = "Launch failed"
+            aovScanResult = "Unable to launch \(aovBundleIdentifier)"
+            remoteError = "LSApplicationWorkspace could not launch Liên Quân."
+            broadcastOverlayState()
+            appendLog("Liên Quân launch failed.")
+            return
+        }
+
+        if !shouldConnectAfterLaunch {
+            isBusy = false
+            isOpeningAoV = false
+            aovStatus = "Connected to \(process)"
+            aovScanResult = "Opened \(aovBundleIdentifier)"
+            broadcastOverlayState()
+            appendLog("Liên Quân opened while RemoteCall is already connected.")
+            return
+        }
+
+        aovStatus = "Waiting 3 seconds..."
+        broadcastOverlayState()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self else { return }
+            guard !self.remoteConnected else {
+                self.isBusy = false
+                self.isOpeningAoV = false
+                self.broadcastOverlayState()
+                return
+            }
+
+            self.isBusy = false
+            self.aovStatus = "Connecting..."
+            self.broadcastOverlayState()
+            self.appendLog(
+                "Liên Quân launch delay finished; connecting RemoteCall."
+            )
+            self.connectAoVRemoteCall()
+        }
+    }
+
+    private func launchApplication(bundleIdentifier: String) -> Bool {
+        let defaultWorkspace = NSSelectorFromString("defaultWorkspace")
+        guard
+            let workspaceClass = NSClassFromString("LSApplicationWorkspace")
+                as? NSObject.Type,
+            workspaceClass.responds(to: defaultWorkspace),
+            let workspace = workspaceClass.perform(defaultWorkspace)?
+                .takeUnretainedValue() as? NSObject
+        else {
+            appendLog("LSApplicationWorkspace is unavailable.")
+            return false
+        }
+
+        for selectorName in [
+            "openApplicationWithBundleID:",
+            "openApplicationWithBundleIdentifier:",
+            "openApplication:",
+        ] {
+            let selector = NSSelectorFromString(selectorName)
+            guard workspace.responds(to: selector) else { continue }
+            _ = workspace.perform(selector, with: bundleIdentifier as NSString)
+            return true
+        }
+
+        appendLog("LSApplicationWorkspace has no supported open selector.")
+        return false
+    }
+
+    func aovGameStatus() -> GameStatusInfo {
+        GameStatusInfo(
+            name: "Liên Quân Mobile",
+            bundleIdentifier: aovBundleIdentifier,
+            processName: aovProcess,
+            isInstalled: isApplicationInstalled(
+                bundleIdentifier: aovBundleIdentifier
+            ),
+            isRunning: isProcessRunning(aovProcess)
+        )
+    }
+
+    func refreshGameStatuses() {
+        gameStatusVersion += 1
+    }
+
+    func isApplicationInstalled(bundleIdentifier: String) -> Bool {
+        applicationInstallStatus(bundleIdentifier: bundleIdentifier) ?? true
+    }
+
+    private func applicationInstallStatus(bundleIdentifier: String) -> Bool? {
+        let defaultWorkspace = NSSelectorFromString("defaultWorkspace")
+        guard
+            let workspaceClass = NSClassFromString("LSApplicationWorkspace")
+                as? NSObject.Type,
+            workspaceClass.responds(to: defaultWorkspace),
+            let workspace = workspaceClass.perform(defaultWorkspace)?
+                .takeUnretainedValue() as? NSObject
+        else {
+            return nil
+        }
+
+        let proxySelectors = [
+            "applicationProxyForIdentifier:",
+            "applicationProxyForBundleIdentifier:",
+            "applicationForIdentifier:",
+            "applicationForBundleIdentifier:",
+        ]
+        for selectorName in proxySelectors {
+            let selector = NSSelectorFromString(selectorName)
+            guard workspace.responds(to: selector) else { continue }
+            if workspace.perform(selector, with: bundleIdentifier as NSString)
+                != nil
+            {
+                return true
+            }
+        }
+
+        let allInstalledApplications = NSSelectorFromString(
+            "allInstalledApplications"
+        )
+        guard
+            workspace.responds(to: allInstalledApplications),
+            let applications = workspace.perform(allInstalledApplications)?
+                .takeUnretainedValue() as? [NSObject]
+        else {
+            return nil
+        }
+
+        return applications.contains {
+            applicationProxy($0, matchesBundleIdentifier: bundleIdentifier)
+        }
+    }
+
+    private func applicationProxy(
+        _ proxy: NSObject,
+        matchesBundleIdentifier bundleIdentifier: String
+    ) -> Bool {
+        for selectorName in [
+            "applicationIdentifier",
+            "bundleIdentifier",
+            "bundleIdentifierString",
+        ] {
+            let selector = NSSelectorFromString(selectorName)
+            guard
+                proxy.responds(to: selector),
+                let value = proxy.perform(selector)?.takeUnretainedValue()
+                    as? String
+            else {
+                continue
+            }
+            if value == bundleIdentifier {
+                return true
+            }
+        }
+        return false
+    }
+
+    func isProcessRunning(_ process: String) -> Bool {
+        guard ds_is_ready() else { return false }
+        let trimmed = process.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        return trimmed.withCString { procbyname($0) } != 0
+    }
+
+    private func configureOverlaySocketCallbacks() {
+        let server = OverlayWebSocketServer.shared()
+        server.messageHandler = { [weak self] message in
+            DispatchQueue.main.async {
+                self?.handleOverlaySocketMessage(message)
+            }
+        }
+        server.connectionHandler = { [weak self] count in
+            DispatchQueue.main.async {
+                self?.overlaySocketClientCount = Int(count)
+                self?.broadcastOverlayState()
+            }
+        }
+    }
+
+    private func handleOverlaySocketMessage(_ message: String) {
+        guard let data = message.data(using: .utf8),
+            let object = try? JSONSerialization.jsonObject(with: data)
+                as? [String: Any],
+            let type = object["type"] as? String
+        else {
+            return
+        }
+
+        switch type {
+        case "hello", "ready", "requestState":
+            broadcastOverlayState()
+            aovManager?.refreshOverlayLayout()
+        case "setMenuVisible":
+            guard let visibleValue = object["visible"],
+                let visible = boolValue(visibleValue)
+            else {
+                return
+            }
+            aovManager?.setOverlayMenuVisible(visible)
+        case "toggleMenu":
+            aovManager?.toggleOverlayMenu()
+        case "setFloatButtonPosition":
+            guard let xValue = object["xRatio"],
+                let yValue = object["yRatio"],
+                let xRatio = doubleValue(xValue),
+                let yRatio = doubleValue(yValue)
+            else {
+                return
+            }
+            aovManager?.setOverlayFloatButtonPositionX(
+                CGFloat(xRatio),
+                y: CGFloat(yRatio)
+            )
+        case "viewport":
+            aovManager?.refreshOverlayLayout()
+        case "setOption":
+            guard let key = object["key"] as? String,
+                let value = object["value"]
+            else {
+                return
+            }
+            if applyOverlayOption(key: key, value: value) {
+                broadcastOverlayState()
+            }
+        case "patchOptions", "setOptions":
+            let options =
+                object["options"] as? [String: Any]
+                ?? object["state"] as? [String: Any]
+                ?? [:]
+            var didChange = false
+            for (key, value) in options {
+                didChange =
+                    applyOverlayOption(key: key, value: value) || didChange
+            }
+            if didChange {
+                broadcastOverlayState()
+            }
+        default:
+            return
+        }
+    }
+
+    @discardableResult
+    private func applyOverlayOption(key: String, value: Any) -> Bool {
+        switch key {
+        case "aovESPEnabled", "espEnabled", "esp":
+            guard let bool = boolValue(value), bool != aovESPEnabled else {
+                return false
+            }
+            aovESPEnabled = bool
+            return true
+        case "aovHackMapEnabled", "hackMapEnabled", "hackMap", "map":
+            guard let bool = boolValue(value), bool != aovHackMapEnabled else {
+                return false
+            }
+            aovHackMapEnabled = bool
+            return true
+        case "aovShowsLine", "showsLine", "line":
+            guard let bool = boolValue(value), bool != aovShowsLine else {
+                return false
+            }
+            aovShowsLine = bool
+            return true
+        case "aovShowsBox", "showsBox", "box":
+            guard let bool = boolValue(value), bool != aovShowsBox else {
+                return false
+            }
+            aovShowsBox = bool
+            return true
+        case "aovShowsHealth", "showsHealth", "health":
+            guard let bool = boolValue(value), bool != aovShowsHealth else {
+                return false
+            }
+            aovShowsHealth = bool
+            return true
+        case "aovShowsName", "showsName", "name":
+            guard let bool = boolValue(value), bool != aovShowsName else {
+                return false
+            }
+            aovShowsName = bool
+            return true
+        case "aovShowsDistance", "showsDistance", "distance":
+            guard let bool = boolValue(value), bool != aovShowsDistance else {
+                return false
+            }
+            aovShowsDistance = bool
+            return true
+        case "aovCameraHeight", "cameraHeight":
+            guard let double = doubleValue(value) else { return false }
+            let clamped = min(
+                max(double, Self.aovCameraHeightMinValue),
+                Self.aovCameraHeightMaxValue
+            )
+            guard abs(clamped - aovCameraHeight) > 0.001 else { return false }
+            aovCameraHeight = clamped
+            NotificationCenter.default.post(
+                name: NSNotification.Name.CameraHeightDidChange,
+                object: nil,
+                userInfo: nil
+            )
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func boolValue(_ value: Any) -> Bool? {
+        if let value = value as? Bool { return value }
+        if let value = value as? NSNumber { return value.boolValue }
+        if let value = value as? String {
+            switch value.lowercased() {
+            case "1", "true", "yes", "on":
+                return true
+            case "0", "false", "no", "off":
+                return false
+            default:
+                return nil
+            }
+        }
+        return nil
+    }
+
+    private func doubleValue(_ value: Any) -> Double? {
+        if let value = value as? Double { return value }
+        if let value = value as? Float { return Double(value) }
+        if let value = value as? NSNumber { return value.doubleValue }
+        if let value = value as? String { return Double(value) }
+        return nil
+    }
+
+    private func broadcastOverlayState() {
+        let state: [String: Any] = [
+            "debug": g_isDebug,
+            "espEnabled": aovESPEnabled,
+            "hackMapEnabled": aovHackMapEnabled,
+            "showsLine": aovShowsLine,
+            "showsBox": aovShowsBox,
+            "showsHealth": aovShowsHealth,
+            "showsName": aovShowsName,
+            "showsDistance": aovShowsDistance,
+            "cameraHeight": aovCameraHeight,
+            "cameraHeightMin": Self.aovCameraHeightMinValue,
+            "cameraHeightMax": Self.aovCameraHeightMaxValue,
+            "remoteConnected": remoteConnected,
+            "connectedProcess": connectedProcess,
+            "aovStatus": aovStatus,
+            "socketClients": overlaySocketClientCount,
+        ]
+        let payload: [String: Any] = [
+            "type": "state",
+            "state": state,
+        ]
+        guard JSONSerialization.isValidJSONObject(payload),
+            let data = try? JSONSerialization.data(withJSONObject: payload)
+        else {
+            return
+        }
+
+        OverlayWebSocketServer.shared().broadcastTextData(data)
+    }
+
+    func probeAoVGetpid() {
+        guard !isBusy else { return }
+        guard allowSupportedAction("Liên Quân getpid") else { return }
+        guard allowToolingAction("Liên Quân getpid") else { return }
+        guard let remoteCall else {
+            remoteError = "Connect RemoteCall to kgvn first."
+            aovStatus = "Not connected"
+            return
+        }
+
+        guard
+            let pointer = dlsym(
+                UnsafeMutableRawPointer(bitPattern: -2),
+                "getpid"
+            )
+        else {
+            remoteError = "Cannot resolve local getpid."
+            return
+        }
+
+        isBusy = true
+        aovStatus = "Calling getpid..."
+        appendLog("Liên Quân demo: remote getpid()...")
+
+        let pointerAddress = UInt(bitPattern: pointer)
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+            let result = "getpid".withCString { symbolCString in
+                remoteCall.doStable(
+                    withTimeout: 10,
+                    functionName: UnsafeMutablePointer(mutating: symbolCString),
+                    functionPointer: UnsafeMutableRawPointer(
+                        bitPattern: pointerAddress
+                    ),
+                    args: nil,
+                    argCount: 0
+                )
+            }
+
+            DispatchQueue.main.async {
+                self.isBusy = false
+                self.aovProbeResult =
+                    "getpid => \(result) (\(Self.hex(UInt64(result))))"
+                self.aovStatus = "Probe OK"
+                self.lastCallResult = Self.hex(UInt64(result))
+                self.appendLog("Liên Quân demo: \(self.aovProbeResult)")
+            }
+        }
+    }
+
+    func probeAoVProcessName() {
+        guard !isBusy else { return }
+        guard allowSupportedAction("Liên Quân processName") else { return }
+        guard allowToolingAction("Liên Quân processName") else { return }
+        guard let remoteCall else {
+            remoteError = "Connect RemoteCall to kgvn first."
+            aovStatus = "Not connected"
+            return
+        }
+
+        isBusy = true
+        aovStatus = "Calling NSProcessInfo..."
+        appendLog("Liên Quân demo: remote NSProcessInfo.processName...")
+
+        workerQueue.async { [weak self] in
+            guard let self else { return }
+
+            let processInfoClass = remote_getClass(remoteCall, "NSProcessInfo")
+            let processInfoSel = remote_sel(remoteCall, "processInfo")
+            let processNameSel = remote_sel(remoteCall, "processName")
+            let utf8Sel = remote_sel(remoteCall, "UTF8String")
+
+            var summary = "class=\(Self.hex(processInfoClass))"
+            var processName = "(unavailable)"
+
+            if processInfoClass != 0, processInfoSel != 0 {
+                let info = remote_msg(
+                    remoteCall,
+                    processInfoClass,
+                    processInfoSel,
+                    0,
+                    0,
+                    0,
+                    0
+                )
+                summary += " info=\(Self.hex(info))"
+                if info != 0, processNameSel != 0 {
+                    let nameObj = remote_msg(
+                        remoteCall,
+                        info,
+                        processNameSel,
+                        0,
+                        0,
+                        0,
+                        0
+                    )
+                    summary += " nameObj=\(Self.hex(nameObj))"
+                    if nameObj != 0, utf8Sel != 0 {
+                        let cstr = remote_msg(
+                            remoteCall,
+                            nameObj,
+                            utf8Sel,
+                            0,
+                            0,
+                            0,
+                            0
+                        )
+                        if cstr != 0 {
+                            var bytes = [UInt8](repeating: 0, count: 64)
+                            let ok = bytes.withUnsafeMutableBytes { buffer in
+                                remoteCall.remoteRead(
+                                    cstr,
+                                    to: buffer.baseAddress,
+                                    size: UInt64(buffer.count - 1)
+                                )
+                            }
+                            if ok {
+                                processName = String(cString: bytes)
+                            }
+                        }
+                    }
+                }
+            }
+
+            DispatchQueue.main.async {
+                self.isBusy = false
+                self.aovProbeResult =
+                    "processName => \(processName)\n\(summary)"
+                self.aovStatus =
+                    processName == "(unavailable)"
+                    ? "Probe partial" : "Probe OK"
+                self.appendLog("Liên Quân demo: \(self.aovProbeResult)")
+            }
+        }
+    }
+
+    private func refreshKernelInfo() {
+        kernelBaseText = Self.hex(ds_get_kernel_base())
+        kernelSlideText = Self.hex(ds_get_kernel_slide())
+    }
+
+    // MARK: - Keep Alive
+
+    func startKeepAlive() {
+        guard !kaEnabled else { return }
+
+        toggleKeepAlive(logger: { [weak self] msg in self?.appendLog(msg) })
+        isKeepAliveEnabled = kaEnabled
+    }
+
+    func stopKeepAlive() {
+        guard kaEnabled else { return }
+
+        toggleKeepAlive(logger: { [weak self] msg in self?.appendLog(msg) })
+        isKeepAliveEnabled = kaEnabled
+    }
+
+    @discardableResult
+    private func refreshSelfProcessState(logIfUnavailable: Bool) -> Bool {
+        let proc = proc_self()
+        let task = task_self()
+        selfProcessReady = proc != 0 && task != 0
+        if !selfProcessReady && logIfUnavailable {
+            appendLog(
+                "Warning: self proc/task lookup is unavailable. RemoteCall may fail in this launch context."
+            )
+        }
+        return selfProcessReady
+    }
+
+    @discardableResult
+    private func prepareOffsetsIfNeeded() -> Bool {
+        supportStatus = DarkSwordSupportStatus.current()
+        guard supportStatus.isSupported else {
+            remoteError = supportStatus.reason
+            return false
+        }
+
+        Self.offsetsLock.lock()
+        defer { Self.offsetsLock.unlock() }
+
+        if offsetsInitialized || Self.sharedOffsetsInitialized {
+            offsetsInitialized = true
+            return true
+        }
+
+        appendLog("Initializing kernel offsets...")
+        init_offsets()
+        offsets_init()
+        Self.sharedOffsetsInitialized = true
+        offsetsInitialized = true
+        appendLog("Kernel offsets initialized.")
+        return true
+    }
+
+    private static func claimKernelRun() -> Bool {
+        kernelRunLock.lock()
+        defer { kernelRunLock.unlock() }
+        guard !isKernelRunClaimed else { return false }
+        isKernelRunClaimed = true
+        return true
+    }
+
+    private static func releaseKernelRun() {
+        kernelRunLock.lock()
+        isKernelRunClaimed = false
+        kernelRunLock.unlock()
+    }
+
+    private func resolveKernelSymbolOffsetsIfNeeded() -> Bool {
+        if emergencyfixfunctiontobereplacedlateronquestionmark() {
+            DispatchQueue.main.async {
+                self.kernelSymbolOffsetsReady = true
+            }
+            appendLog("Kernel symbol offsets resolved from cached kernelcache.")
+            return true
+        }
+
+        appendLog("Kernel symbol offsets missing. Downloading kernelcache...")
+        let resolved = dlkcache()
+        DispatchQueue.main.async {
+            self.kernelSymbolOffsetsReady = resolved
+        }
+        appendLog(
+            resolved
+                ? "Kernel symbol offsets resolved."
+                : "Kernel symbol offsets failed to resolve."
+        )
+        return resolved
+    }
+
+    private func allowSupportedAction(_ actionName: String) -> Bool {
+        supportStatus = DarkSwordSupportStatus.current()
+        guard supportStatus.isSupported else {
+            remoteError = supportStatus.reason
+            appendLog("\(actionName) blocked: \(supportStatus.reason)")
+            return false
+        }
+        return true
+    }
+
+    private func allowToolingAction(_ actionName: String) -> Bool {
+        guard isExploitReady else {
+            let message =
+                "Initialize DarkSword successfully before using tools."
+            remoteError = message
+            appendLog("\(actionName) blocked: \(message)")
+            return false
+        }
+        return true
+    }
+
+    private func appendLog(_ line: String) {
+        guard g_isDebug else { return }
+        DispatchQueue.main.async {
+            let trimmed = line.trimmingCharacters(in: .newlines)
+            guard !trimmed.isEmpty else { return }
+            logSwift("[DarkSword] \(trimmed)")
+            if self.logText.isEmpty {
+                self.logText = trimmed
+            } else {
+                self.logText += "\n" + trimmed
+            }
+        }
+    }
+
+    private func parseArguments(_ text: String) throws -> [UInt64] {
+        let tokens =
+            text
+            .split { $0 == "," || $0 == " " || $0 == "\n" || $0 == "\t" }
+            .map(String.init)
+
+        return try tokens.map { token in
+            let value = token.trimmingCharacters(in: .whitespacesAndNewlines)
+            let radix = value.lowercased().hasPrefix("0x") ? 16 : 10
+            let numberText = radix == 16 ? String(value.dropFirst(2)) : value
+            guard let number = UInt64(numberText, radix: radix) else {
+                throw NSError(
+                    domain: "DarkSwordManager",
+                    code: 1,
+                    userInfo: [
+                        NSLocalizedDescriptionKey: "Invalid argument: \(token)"
+                    ]
+                )
+            }
+            return number
+        }
+    }
+
+    private static func hex(_ value: UInt64) -> String {
+        "0x" + String(value, radix: 16, uppercase: false)
+    }
+}

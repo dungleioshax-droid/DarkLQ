@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      html,
+      body,
+      canvas {
+        width: 100vw;
+        height: 100vh;
+        overflow: hidden;
+        background: transparent;
+      }
+      body,
+      canvas {
+        pointer-events: none;
+      }
+      canvas {
+        position: fixed;
+        inset: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="overlay"></canvas>
+    <script>
+      var canvas = document.getElementById("overlay");
+      var context = canvas.getContext("2d");
+      var entities = [];
+      var screenWidth = 0;
+      var screenHeight = 0;
+      var paused = false;
+      var socket = null;
+      var reconnectTimer = 0;
+      var viewportTimer = 0;
+      var socketURL = "ws://127.0.0.1:%%OVERLAY_WS_PORT%%";
+
+      function clamp(value, minimum, maximum) {
+        return Math.max(minimum, Math.min(maximum, value));
+      }
+
+      function resize() {
+        screenWidth = window.innerWidth;
+        screenHeight = window.innerHeight;
+        var dpr = window.devicePixelRatio || 1;
+        canvas.width = Math.round(screenWidth * dpr);
+        canvas.height = Math.round(screenHeight * dpr);
+        context.setTransform(dpr, 0, 0, dpr, 0, 0);
+        if (viewportTimer) clearTimeout(viewportTimer);
+        viewportTimer = setTimeout(function () {
+          send({
+            type: "viewport",
+            role: "esp",
+            width: screenWidth,
+            height: screenHeight,
+          });
+        }, 80);
+      }
+
+      function healthColor(hp, maxHp, alpha) {
+        var ratio = maxHp > 0 ? hp / maxHp : 0;
+        if (ratio < 0.3) return "rgba(180,45,45," + alpha + ")";
+        if (ratio <= 0.6) return "rgba(180,180,45," + alpha + ")";
+        return "rgba(45,180,45," + alpha + ")";
+      }
+
+      function drawLine(sx, sy) {
+        var endY = sy - 15;
+        context.beginPath();
+        context.moveTo(screenWidth / 2, 38);
+        context.lineTo(sx, endY);
+        context.strokeStyle = "rgba(255,255,255,0.70)";
+        context.lineWidth = 1.2;
+        context.stroke();
+        context.beginPath();
+        context.arc(sx, endY, 3, 0, Math.PI * 2);
+        context.fillStyle = "rgba(0,255,0,1)";
+        context.fill();
+      }
+
+      function drawBox(box) {
+        context.strokeStyle = "rgba(255,255,255,0.7)";
+        context.lineWidth = 1.25;
+        context.strokeRect(box.x, box.y, box.w, box.h);
+      }
+
+      function drawHealthBar(box, hp, maxHp) {
+        var ratio = clamp(maxHp > 0 ? hp / maxHp : 0, 0, 1);
+        var barY = box.y - 7;
+        context.fillStyle = "rgba(0,0,0,0.55)";
+        context.fillRect(box.x - 0.5, barY - 0.5, box.w + 1, 5);
+        context.fillStyle = healthColor(hp, maxHp, 1);
+        context.fillRect(box.x, barY, box.w * ratio, 4);
+      }
+
+      function drawDistance(distance, sx, sy) {
+        var text = "[ " + Math.round(distance) + "m ]";
+        context.font = "700 11px -apple-system, Helvetica, Arial, sans-serif";
+        context.textAlign = "center";
+        context.textBaseline = "top";
+        context.fillStyle = "rgba(0,0,0,0.65)";
+        context.fillText(text, sx + 1, sy + 10);
+        context.fillStyle = "rgba(255,255,100,1)";
+        context.fillText(text, sx, sy + 9);
+      }
+
+      function drawName(name, sx, sy) {
+        context.font = "700 14px -apple-system, Helvetica, Arial, sans-serif";
+        context.textAlign = "center";
+        context.textBaseline = "top";
+        context.fillStyle = "rgba(0,0,0,0.65)";
+        context.fillText(name, sx + 1, sy + 26);
+        context.fillStyle = "rgba(255,255,255,1)";
+        context.fillText(name, sx, sy + 25);
+      }
+
+      function edgeHintPosition(sx, sy) {
+        var dx = sx - screenWidth / 2;
+        var dy = sy - screenHeight / 2;
+        var nx = Math.abs(dx) / Math.max(screenWidth / 2, 1);
+        var ny = Math.abs(dy) / Math.max(screenHeight / 2, 1);
+        var radius = 20;
+        var margin = radius + 10;
+        var x = sx;
+        var y = sy;
+        if (nx > ny) {
+          var directionX = dx > 0 ? 1 : -1;
+          var ratioX = nx > 0 ? Math.abs(1 / nx) : 1;
+          x = screenWidth / 2 + directionX * (screenWidth / 2 - margin);
+          y = clamp(
+            screenHeight / 2 + dy * ratioX,
+            margin,
+            screenHeight - margin,
+          );
+        } else {
+          var directionY = dy > 0 ? 1 : -1;
+          var ratioY = ny > 0 ? Math.abs(1 / ny) : 1;
+          x = clamp(
+            screenWidth / 2 + dx * ratioY,
+            margin,
+            screenWidth - margin,
+          );
+          y = screenHeight / 2 + directionY * (screenHeight / 2 - margin);
+        }
+        return { x: x, y: y, radius: radius };
+      }
+
+      function drawCircleHealth(position, hp, maxHp) {
+        var ratio = clamp(maxHp > 0 ? hp / maxHp : 0, 0, 1);
+        var full = Math.PI * 2;
+        var start = -(full / 4) + full * (1 - ratio);
+        var end = full - full / 4;
+        context.beginPath();
+        context.arc(position.x, position.y, position.radius, 0, full);
+        context.fillStyle = "rgba(0,0,0,0.24)";
+        context.fill();
+        context.beginPath();
+        context.arc(position.x, position.y, position.radius, start, end, false);
+        context.strokeStyle = healthColor(hp, maxHp, 1);
+        context.lineWidth = 4;
+        context.stroke();
+        context.font = "700 10px -apple-system, Helvetica, Arial, sans-serif";
+        context.textAlign = "center";
+        context.textBaseline = "middle";
+        context.fillStyle = "rgba(255,255,255,0.95)";
+        context.fillText(
+          String(Math.round(ratio * 100)),
+          position.x,
+          position.y,
+        );
+      }
+
+      function render() {
+        if (paused) return;
+        context.clearRect(0, 0, screenWidth, screenHeight);
+        for (var i = 0; i < entities.length; i++) {
+          var entity = entities[i];
+          if (!entity.visible) continue;
+          if (entity.drawLine) drawLine(entity.sx, entity.sy);
+          if (entity.drawDistance)
+            drawDistance(entity.distance || 0, entity.sx, entity.sy);
+          if (entity.box) {
+            drawBox(entity.box);
+            if (entity.drawHealth && entity.onScreen) {
+              drawHealthBar(entity.box, entity.hp || 0, entity.maxHp || 1);
+            }
+          }
+          if (entity.drawName && entity.name)
+            drawName(entity.name, entity.sx, entity.sy);
+          if (
+            entity.drawHealth &&
+            !entity.onScreen &&
+            (entity.sx < 0 ||
+              entity.sy < 0 ||
+              entity.sx > screenWidth ||
+              entity.sy > screenHeight)
+          ) {
+            drawCircleHealth(
+              edgeHintPosition(entity.sx, entity.sy),
+              entity.hp || 0,
+              entity.maxHp || 1,
+            );
+          }
+        }
+        requestAnimationFrame(render);
+      }
+
+      function send(message) {
+        if (!socket || socket.readyState !== WebSocket.OPEN) return;
+        try {
+          socket.send(JSON.stringify(message));
+        } catch (error) {}
+      }
+
+      function connect() {
+        try {
+          socket = new WebSocket(socketURL);
+        } catch (error) {
+          scheduleReconnect();
+          return;
+        }
+        socket.onopen = function () {
+          send({
+            type: "hello",
+            role: "esp",
+            width: screenWidth,
+            height: screenHeight,
+          });
+          send({
+            type: "viewport",
+            role: "esp",
+            width: screenWidth,
+            height: screenHeight,
+          });
+        };
+        socket.onmessage = function (event) {
+          try {
+            var payload = JSON.parse(event.data);
+            if (Array.isArray(payload)) entities = payload;
+            else if (
+              payload &&
+              payload.type === "targets" &&
+              Array.isArray(payload.targets)
+            )
+              entities = payload.targets;
+            else if (payload && Array.isArray(payload.targets))
+              entities = payload.targets;
+          } catch (error) {
+            entities = [];
+          }
+        };
+        socket.onclose = function () {
+          socket = null;
+          scheduleReconnect();
+        };
+        socket.onerror = function () {
+          try {
+            socket.close();
+          } catch (error) {}
+        };
+      }
+
+      function scheduleReconnect() {
+        if (reconnectTimer) return;
+        reconnectTimer = setTimeout(function () {
+          reconnectTimer = 0;
+          connect();
+        }, 500);
+      }
+
+      window.addEventListener("resize", resize);
+      document.addEventListener("visibilitychange", function () {
+        paused = document.hidden;
+        if (!paused) render();
+      });
+      resize();
+      render();
+      connect();
+    </script>
+  </body>
+</html>

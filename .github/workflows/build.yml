@@ -1,0 +1,54 @@
+name: Build DarkLQ IPA
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build External-DarkSword IPA
+    runs-on: macos-14
+
+    env:
+      THEOS: ${{ github.workspace }}/theos
+
+    steps:
+      - name: Checkout Project
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install System Tools
+        run: |
+          brew install ldid xz
+
+      - name: Checkout Theos
+        uses: actions/checkout@v4
+        with:
+          repository: theos/theos
+          ref: master
+          path: theos
+          submodules: recursive
+
+      - name: Download Theos SDKs
+        run: |
+          git clone --depth=1 https://github.com/theos/sdks.git $THEOS/sdks
+
+      - name: Build IPA via Theos
+        run: |
+          cd External-DarkSword
+          make package FINALPACKAGE=1
+
+      - name: Verify Built IPA
+        run: |
+          ls -lh External-DarkSword/packages/
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: External-DarkSword-IPA
+          path: External-DarkSword/packages/*.ipa

@@ -1,0 +1,719 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
+        -webkit-tap-highlight-color: transparent;
+        -webkit-touch-callout: none;
+        -webkit-user-select: none;
+      }
+      html,
+      body {
+        width: 100vw;
+        height: 100vh;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, Arial,
+          sans-serif;
+      }
+      #menu {
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        width: 60vw;
+        height: 70vh;
+        transform: translate(-50%, -50%);
+        overflow: hidden;
+        border: 1px solid rgba(73, 255, 151, 0.78);
+        border-radius: 8px;
+        background: #07120e;
+        color: #e5ffed;
+        box-shadow: 0 14px 38px rgba(0, 0, 0, 0.52);
+      }
+      #header {
+        height: 48px;
+        padding: 0 12px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        border-bottom: 1px solid rgba(109, 255, 173, 0.25);
+        background: #0b1d15;
+        touch-action: none;
+      }
+      .title {
+        font-size: 15px;
+        font-weight: 800;
+        line-height: 18px;
+      }
+      .subtitle {
+        margin-top: 1px;
+        color: #86b99b;
+        font-size: 10px;
+        font-weight: 600;
+      }
+      .headerActions {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+      .iconButton {
+        width: 28px;
+        height: 28px;
+        border: 1px solid rgba(109, 255, 173, 0.36);
+        border-radius: 5px;
+        background: #10261b;
+        color: #c7ffda;
+        font-size: 14px;
+        font-weight: 800;
+      }
+      #close svg {
+        width: 16px;
+        height: 16px;
+        display: block;
+        stroke: currentColor;
+        stroke-width: 2.5;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      #tabs {
+        height: 39px;
+        display: grid;
+        grid-template-columns: 1fr 1fr 1.25fr;
+        border-bottom: 1px solid rgba(109, 255, 173, 0.18);
+        background: #09170f;
+      }
+      .tab {
+        border: 0;
+        border-right: 1px solid rgba(109, 255, 173, 0.12);
+        background: transparent;
+        color: #81ad90;
+        font-size: 11px;
+        font-weight: 800;
+      }
+      .tab:last-child {
+        border-right: 0;
+      }
+      .tab.active {
+        color: #c8ffdc;
+        background: rgba(83, 255, 147, 0.12);
+        box-shadow: inset 0 -2px #65f7a4;
+      }
+      #content {
+        height: calc(100% - 87px);
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
+      }
+      #content::-webkit-scrollbar {
+        width: 6px;
+      }
+      #content::-webkit-scrollbar-thumb {
+        border-radius: 3px;
+        background: rgba(109, 255, 173, 0.55);
+      }
+      .panel {
+        display: none;
+        padding: 12px;
+      }
+      .panel.active {
+        display: block;
+      }
+      .sectionTitle {
+        margin: 2px 0 8px;
+        color: #86b99b;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+      }
+      .row {
+        min-height: 52px;
+        padding: 9px 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        border-bottom: 1px solid rgba(109, 255, 173, 0.11);
+      }
+      .rowTitle {
+        color: #effff4;
+        font-size: 13px;
+        font-weight: 700;
+      }
+      .rowValue {
+        margin-top: 2px;
+        color: #85a991;
+        font-size: 10px;
+        line-height: 13px;
+      }
+      .switch {
+        position: relative;
+        width: 36px;
+        height: 21px;
+        flex: 0 0 auto;
+        border: 1px solid #355645;
+        border-radius: 11px;
+        background: #14261b;
+      }
+      .switch::after {
+        content: "";
+        position: absolute;
+        left: 3px;
+        top: 3px;
+        width: 13px;
+        height: 13px;
+        border-radius: 50%;
+        background: #6e8f79;
+        transition:
+          transform 0.13s ease,
+          background 0.13s ease;
+      }
+      .switch.on {
+        border-color: #61ed9f;
+        background: #19472d;
+      }
+      .switch.on::after {
+        transform: translateX(15px);
+        background: #b8ffd5;
+      }
+      .rangeCard {
+        padding: 11px 0 14px;
+        border-bottom: 1px solid rgba(109, 255, 173, 0.11);
+      }
+      .rangeTop {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .rangeValue {
+        color: #afffcf;
+        font-size: 15px;
+        font-weight: 800;
+      }
+      input[type="range"] {
+        width: 100%;
+        margin-top: 12px;
+        accent-color: #69ffad;
+      }
+      .mapHint {
+        margin: 0 0 11px;
+        color: #85a991;
+        font-size: 11px;
+        line-height: 15px;
+      }
+      #screenMap {
+        position: relative;
+        width: min(100%, 430px);
+        margin: 0 auto;
+        aspect-ratio: 16 / 9;
+        border: 1px solid rgba(109, 255, 173, 0.55);
+        border-radius: 5px;
+        overflow: hidden;
+        background:
+          repeating-linear-gradient(
+            0deg,
+            rgba(109, 255, 173, 0.075) 0 1px,
+            transparent 1px 18px
+          ),
+          repeating-linear-gradient(
+            90deg,
+            rgba(109, 255, 173, 0.075) 0 1px,
+            transparent 1px 18px
+          ),
+          #09170f;
+        touch-action: manipulation;
+      }
+      #screenMap::before {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 0;
+        bottom: 0;
+        width: 1px;
+        background: rgba(109, 255, 173, 0.18);
+      }
+      #screenMap::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 50%;
+        height: 1px;
+        background: rgba(109, 255, 173, 0.18);
+      }
+      #fabDot {
+        position: absolute;
+        width: 12px;
+        height: 12px;
+        border: 2px solid #ffe6e6;
+        border-radius: 50%;
+        background: #ff3f4f;
+        transform: translate(-50%, -50%);
+        box-shadow: 0 0 0 2px rgba(255, 63, 79, 0.22);
+        pointer-events: none;
+      }
+      @media (max-width: 540px) {
+        #menu {
+          width: 60vw;
+          height: 70vh;
+        }
+        .title {
+          font-size: 13px;
+        }
+        .tab {
+          font-size: 10px;
+        }
+        .rowTitle {
+          font-size: 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <section id="menu" aria-label="Menu Mod">
+      <header id="header">
+        <div>
+          <div class="title">Menu Mod</div>
+          <div class="subtitle">Develop by Le Tien Dat</div>
+        </div>
+        <div class="headerActions">
+          <button id="language" class="iconButton" aria-label="Change language">
+            VI
+          </button>
+          <button id="close" class="iconButton" aria-label="Close">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M18 6 6 18M6 6l12 12"></path>
+            </svg>
+          </button>
+        </div>
+      </header>
+      <nav id="tabs">
+        <button class="tab active" data-tab="esp">ESP</button>
+        <button class="tab" data-tab="camera" data-i18n="tabCamera">
+          Camera
+        </button>
+        <button class="tab" data-tab="drag" data-i18n="dragTitle">
+          Drag Icon
+        </button>
+      </nav>
+      <main id="content">
+        <section class="panel active" data-panel="esp">
+          <div class="sectionTitle" data-i18n="visual">Visual</div>
+          <div class="row">
+            <div><div class="rowTitle">ESP</div></div>
+            <button class="switch" data-key="espEnabled"></button>
+          </div>
+          <div class="row">
+            <div>
+              <div class="rowTitle" data-i18n="hackMap">Hack map</div>
+              <div class="rowValue" data-i18n="hackMapHint">
+                Active visible full enemies
+              </div>
+            </div>
+            <button class="switch" data-key="hackMapEnabled"></button>
+          </div>
+          <div class="row">
+            <div>
+              <div class="rowTitle" data-i18n="line">Line</div>
+              <div class="rowValue" data-i18n="lineHint">
+                Line from top center
+              </div>
+            </div>
+            <button class="switch" data-key="showsLine"></button>
+          </div>
+          <div class="row">
+            <div>
+              <div class="rowTitle" data-i18n="box">Box</div>
+              <div class="rowValue" data-i18n="boxHint">Enemy bounding box</div>
+            </div>
+            <button class="switch" data-key="showsBox"></button>
+          </div>
+          <div class="row">
+            <div>
+              <div class="rowTitle" data-i18n="health">Health bar</div>
+              <div class="rowValue" data-i18n="healthHint">
+                Health above the box
+              </div>
+            </div>
+            <button class="switch" data-key="showsHealth"></button>
+          </div>
+          <div class="row">
+            <div>
+              <div class="rowTitle" data-i18n="name">Hero name</div>
+              <div class="rowValue" data-i18n="nameHint">Hero label</div>
+            </div>
+            <button class="switch" data-key="showsName"></button>
+          </div>
+          <div class="row">
+            <div>
+              <div class="rowTitle" data-i18n="distance">Distance</div>
+              <div class="rowValue" data-i18n="distanceHint">
+                Show distance to enemy
+              </div>
+            </div>
+            <button class="switch" data-key="showsDistance"></button>
+          </div>
+        </section>
+        <section class="panel" data-panel="camera">
+          <div class="sectionTitle" data-i18n="camera">Camera</div>
+          <div class="rangeCard">
+            <div class="rangeTop">
+              <div>
+                <div class="rowTitle" data-i18n="cameraHeight">
+                  Camera height
+                </div>
+                <div class="rowValue" data-i18n="cameraHint">
+                  Remote camera zoom value
+                </div>
+              </div>
+              <div id="cameraValue" class="rangeValue">1.0</div>
+            </div>
+            <input
+              id="cameraHeight"
+              type="range"
+              min="1"
+              max="10"
+              step="0.1"
+              value="1"
+            />
+          </div>
+        </section>
+        <section class="panel" data-panel="drag">
+          <div class="sectionTitle" data-i18n="dragTitle">Drag Icon</div>
+          <p class="mapHint" data-i18n="dragHint">
+            Tap a position to place the floating button.
+          </p>
+          <div id="screenMap"><div id="fabDot"></div></div>
+        </section>
+      </main>
+    </section>
+    <script>
+      var socketURL = "ws://127.0.0.1:%%OVERLAY_WS_PORT%%";
+      var socket = null;
+      var reconnectTimer = 0;
+      var menu = document.getElementById("menu");
+      var header = document.getElementById("header");
+      var screenMap = document.getElementById("screenMap");
+      var fabDot = document.getElementById("fabDot");
+      var state = {
+        espEnabled: false,
+        hackMapEnabled: false,
+        showsLine: false,
+        showsBox: false,
+        showsHealth: false,
+        showsName: false,
+        showsDistance: false,
+        cameraHeight: 1,
+        cameraHeightMin: 1,
+        cameraHeightMax: 10,
+      };
+      var layout = {
+        screenWidth: 16,
+        screenHeight: 9,
+        fabCenterX: 0.5,
+        fabCenterY: 0.5,
+        menuVisible: false,
+      };
+      var locale = "en";
+      try {
+        locale = localStorage.getItem("ds.menu.locale") || "vi";
+      } catch (error) {}
+      var cameraHeightDirty = false;
+      var pendingMenuVisibility = null;
+      var translations = {
+        en: {
+          tabCamera: "Camera",
+          visual: "Visual",
+          hackMap: "Hack map",
+          hackMapHint: "Active visible full enemies",
+          line: "Line",
+          lineHint: "Line from the top of the screen",
+          box: "Box",
+          boxHint: "Box around each enemy",
+          health: "Health bar",
+          healthHint: "Show above the box",
+          name: "Hero name",
+          nameHint: "Show hero name",
+          distance: "Distance",
+          distanceHint: "Show distance to enemy",
+          camera: "Camera",
+          cameraHeight: "Camera height",
+          cameraHint: "Drag to zoom in or out",
+          dragTitle: "Drag Icon",
+          dragHint: "Tap where you want to place the floating button.",
+        },
+        vi: {
+          tabCamera: "Camera",
+          visual: "Hiển thị ESP",
+          hackMap: "Map sáng",
+          hackMapHint: "Hiển thị full kẻ địch",
+          line: "Line",
+          lineHint: "Kẻ đường line tới địch",
+          box: "Box",
+          boxHint: "Khung quanh từng kẻ địch",
+          health: "Máu",
+          healthHint: "Hiển thị máu địch",
+          name: "Tên tướng",
+          nameHint: "Hiển thị tên tướng",
+          distance: "Khoảng cách",
+          distanceHint: "Hiển thị khoảng cách tới địch",
+          camera: "Camera",
+          cameraHeight: "Độ cao camera",
+          cameraHint: "Kéo để zoom camera gần hoặc xa",
+          dragTitle: "Vị trí icon menu",
+          dragHint: "Chạm vào vị trí muốn hiển thị icon menu",
+        },
+      };
+
+      function clamp(value, minimum, maximum) {
+        return Math.max(minimum, Math.min(maximum, value));
+      }
+      function send(message) {
+        if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+        try {
+          socket.send(JSON.stringify(message));
+          return true;
+        } catch (error) {
+          return false;
+        }
+      }
+      function sendOption(key, value) {
+        send({ type: "setOption", key: key, value: value });
+      }
+      function flushPendingMenuVisibility() {
+        if (pendingMenuVisibility === null) return;
+        if (send({ type: "setMenuVisible", visible: pendingMenuVisibility }))
+          pendingMenuVisibility = null;
+      }
+      function setMenuVisible(visible) {
+        pendingMenuVisibility = !!visible;
+        flushPendingMenuVisibility();
+      }
+
+      function renderState() {
+        document
+          .querySelectorAll(".switch[data-key]")
+          .forEach(function (button) {
+            button.classList.toggle("on", !!state[button.dataset.key]);
+          });
+        var slider = document.getElementById("cameraHeight");
+        slider.min = state.cameraHeightMin || 1;
+        slider.max = state.cameraHeightMax || 10;
+        slider.value = state.cameraHeight || 1;
+        document.getElementById("cameraValue").textContent = Number(
+          slider.value,
+        ).toFixed(1);
+      }
+
+      function renderLayout() {
+        var width = Math.max(1, Number(layout.screenWidth) || 1);
+        var height = Math.max(1, Number(layout.screenHeight) || 1);
+        screenMap.style.aspectRatio = width + " / " + height;
+        fabDot.style.left = clamp(Number(layout.fabCenterX), 0, 1) * 100 + "%";
+        fabDot.style.top = clamp(Number(layout.fabCenterY), 0, 1) * 100 + "%";
+      }
+
+      function applyLocale() {
+        var vietnamese = locale === "vi";
+        document.getElementById("language").textContent = vietnamese
+          ? "EN"
+          : "VI";
+        document.documentElement.lang = locale;
+        var strings = translations[locale] || translations.vi;
+        document.querySelectorAll("[data-i18n]").forEach(function (element) {
+          var value = strings[element.dataset.i18n];
+          if (value) element.textContent = value;
+        });
+      }
+
+      function applyPayload(raw) {
+        try {
+          var payload = JSON.parse(raw);
+          if (payload && payload.type === "state" && payload.state) {
+            Object.keys(payload.state).forEach(function (key) {
+              state[key] = payload.state[key];
+            });
+            renderState();
+          }
+          if (payload && payload.type === "overlayLayout" && payload.layout) {
+            Object.keys(payload.layout).forEach(function (key) {
+              layout[key] = payload.layout[key];
+            });
+            renderLayout();
+          }
+        } catch (error) {}
+      }
+
+      function connect() {
+        try {
+          socket = new WebSocket(socketURL);
+        } catch (error) {
+          scheduleReconnect();
+          return;
+        }
+        socket.onopen = function () {
+          send({ type: "hello", role: "menu" });
+          flushPendingMenuVisibility();
+        };
+        socket.onmessage = function (event) {
+          if (
+            typeof event.data === "string" &&
+            event.data.indexOf('"type":"state"') === -1 &&
+            event.data.indexOf('"overlayLayout"') === -1
+          )
+            return;
+          applyPayload(event.data);
+        };
+        socket.onclose = function () {
+          socket = null;
+          scheduleReconnect();
+        };
+        socket.onerror = function () {
+          try {
+            socket.close();
+          } catch (error) {}
+        };
+      }
+      function scheduleReconnect() {
+        if (reconnectTimer) return;
+        reconnectTimer = setTimeout(function () {
+          reconnectTimer = 0;
+          connect();
+        }, 500);
+      }
+
+      document.querySelectorAll(".switch[data-key]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          var key = button.dataset.key;
+          state[key] = !state[key];
+          renderState();
+          sendOption(key, state[key]);
+        });
+      });
+
+      var cameraHeightControl = document.getElementById("cameraHeight");
+      function commitCameraHeight() {
+        if (!cameraHeightDirty) return;
+        cameraHeightDirty = false;
+        sendOption("cameraHeight", state.cameraHeight);
+      }
+      cameraHeightControl.addEventListener("input", function () {
+        state.cameraHeight = Number(cameraHeightControl.value);
+        document.getElementById("cameraValue").textContent =
+          state.cameraHeight.toFixed(1);
+        cameraHeightDirty = true;
+      });
+      cameraHeightControl.addEventListener("change", commitCameraHeight);
+      cameraHeightControl.addEventListener("pointerup", commitCameraHeight);
+      cameraHeightControl.addEventListener("touchend", commitCameraHeight);
+
+      document.querySelectorAll(".tab").forEach(function (button) {
+        button.addEventListener("click", function () {
+          document.querySelectorAll(".tab").forEach(function (item) {
+            item.classList.toggle("active", item === button);
+          });
+          document.querySelectorAll(".panel").forEach(function (panel) {
+            panel.classList.toggle(
+              "active",
+              panel.dataset.panel === button.dataset.tab,
+            );
+          });
+        });
+      });
+
+      function toggleLocale() {
+        locale = locale === "vi" ? "en" : "vi";
+        try {
+          localStorage.setItem("ds.menu.locale", locale);
+        } catch (error) {}
+        applyLocale();
+      }
+      document
+        .getElementById("language")
+        .addEventListener("click", toggleLocale);
+
+      document.getElementById("close").addEventListener("click", function () {
+        setMenuVisible(false);
+      });
+      screenMap.addEventListener("pointerdown", function (event) {
+        var rect = screenMap.getBoundingClientRect();
+        var xRatio = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+        var yRatio = clamp((event.clientY - rect.top) / rect.height, 0, 1);
+        layout.fabCenterX = xRatio;
+        layout.fabCenterY = yRatio;
+        renderLayout();
+        send({
+          type: "setFloatButtonPosition",
+          xRatio: xRatio,
+          yRatio: yRatio,
+        });
+        event.preventDefault();
+      });
+
+      var dragging = false;
+      var startX = 0;
+      var startY = 0;
+      var originX = 0;
+      var originY = 0;
+      header.addEventListener("pointerdown", function (event) {
+        if (event.target.closest("button")) return;
+        var rect = menu.getBoundingClientRect();
+        dragging = true;
+        startX = event.clientX;
+        startY = event.clientY;
+        originX = rect.left;
+        originY = rect.top;
+        menu.style.left = originX + "px";
+        menu.style.top = originY + "px";
+        menu.style.transform = "none";
+        header.setPointerCapture(event.pointerId);
+        event.preventDefault();
+      });
+      header.addEventListener("pointermove", function (event) {
+        if (!dragging) return;
+        var width = menu.offsetWidth;
+        var height = menu.offsetHeight;
+        var nextX = clamp(
+          originX + event.clientX - startX,
+          0,
+          Math.max(0, window.innerWidth - width),
+        );
+        var nextY = clamp(
+          originY + event.clientY - startY,
+          0,
+          Math.max(0, window.innerHeight - height),
+        );
+        menu.style.left = nextX + "px";
+        menu.style.top = nextY + "px";
+        event.preventDefault();
+      });
+      function stopMenuDrag(event) {
+        if (!dragging) return;
+        dragging = false;
+        try {
+          header.releasePointerCapture(event.pointerId);
+        } catch (error) {}
+      }
+      header.addEventListener("pointerup", stopMenuDrag);
+      header.addEventListener("pointercancel", stopMenuDrag);
+
+      applyLocale();
+      renderState();
+      renderLayout();
+      connect();
+    </script>
+  </body>
+</html>
