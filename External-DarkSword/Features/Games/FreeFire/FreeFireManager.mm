@@ -99,13 +99,20 @@ NS_ASSUME_NONNULL_BEGIN
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
       uint32_t overlayCooldown = 0;
+      uint32_t baseCooldown = 0;
       while (self.isRunning && self.remoteCall) {
           @autoreleasepool {
               if (self.binaryBase == 0) {
-                  self.binaryBase = [self getFreeFireBaseAddress];
-                  if (self.binaryBase != 0) {
-                      LOG(@"[FreeFire] Binary base: 0x%lx",
-                          (unsigned long)self.binaryBase);
+                  if (baseCooldown == 0) {
+                      self.binaryBase = [self getFreeFireBaseAddress];
+                      if (self.binaryBase != 0) {
+                          LOG(@"[FreeFire] Binary base: 0x%lx",
+                              (unsigned long)self.binaryBase);
+                      } else {
+                          baseCooldown = 50; // Throttle retry to ~0.5s instead of 100 FPS
+                      }
+                  } else {
+                      baseCooldown--;
                   }
               }
 
@@ -185,7 +192,7 @@ NS_ASSUME_NONNULL_BEGIN
         return 0;
     }
 
-    uint64_t scratch_addr = [self.remoteCall trojanMem] + 0x1000;
+    uint64_t scratch_addr = [self.remoteCall trojanMem] + 0x100;
     uint32_t count = TASK_DYLD_INFO_COUNT;
     if (![self.remoteCall remote_write:scratch_addr
                                   from:&count
