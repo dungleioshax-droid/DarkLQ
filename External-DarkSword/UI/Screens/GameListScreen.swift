@@ -117,10 +117,10 @@ struct GameListScreen: View {
         .onReceive(timer) { _ in
             manager.refreshGameStatuses()
         }
-        .onChange(of: manager.remoteError) { _, _ in
+        .onChange(of: manager.remoteError) { _ in
             showLaunchErrorIfNeeded()
         }
-        .onChange(of: manager.remoteConnected) { _, connected in
+        .onChange(of: manager.remoteConnected) { connected in
             if connected {
                 isWaitingForGameActionResult = false
             }
