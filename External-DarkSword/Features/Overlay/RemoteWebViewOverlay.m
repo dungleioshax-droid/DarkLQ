@@ -322,8 +322,9 @@ static CGFloat OverlayClamp(CGFloat value, CGFloat lower, CGFloat upper) {
     if (!configClass || !webViewClass)
         return 0;
 
-    RemoteObjectRef config = [self call:configClass selector:"alloc"];
-    config = config ? [self call:config selector:"init"] : 0;
+    RemoteObjectRef allocConfig = [self call:configClass selector:"alloc"];
+    RemoteObjectRef config = allocConfig ? remote_msg_on_main_thread(
+        self.remoteCall, allocConfig, [self getSelector:"init"], NULL, NULL, 0) : 0;
     if (!config)
         return 0;
 
@@ -376,15 +377,20 @@ static CGFloat OverlayClamp(CGFloat value, CGFloat lower, CGFloat upper) {
 
 - (BOOL)refreshWindowBounds {
     uint64_t selector = [self getSelector:"bounds"];
-    if (!selector || !self.window)
-        return NO;
+    if (!selector || !self.window) {
+        self.cachedScreenWidth = MAX(kWidth, kHeight);
+        self.cachedScreenHeight = MIN(kWidth, kHeight);
+        return YES;
+    }
 
     CGRect bounds = remote_getCGRect(self.remoteCall, self.window, selector);
-    if (bounds.size.width <= 0.0 || bounds.size.height <= 0.0)
-        return NO;
-
-    self.cachedScreenWidth = bounds.size.width;
-    self.cachedScreenHeight = bounds.size.height;
+    if (bounds.size.width > 0.0 && bounds.size.height > 0.0) {
+        self.cachedScreenWidth = bounds.size.width;
+        self.cachedScreenHeight = bounds.size.height;
+    } else {
+        self.cachedScreenWidth = MAX(kWidth, kHeight);
+        self.cachedScreenHeight = MIN(kWidth, kHeight);
+    }
     return YES;
 }
 
@@ -459,13 +465,13 @@ static CGFloat OverlayClamp(CGFloat value, CGFloat lower, CGFloat upper) {
     if (boundsSEL && self.window) {
         CGRect gameBounds =
             remote_getCGRect(self.remoteCall, self.window, boundsSEL);
-        self.cachedScreenWidth = gameBounds.size.width;
-        self.cachedScreenHeight = gameBounds.size.height;
+        self.cachedScreenWidth = (gameBounds.size.width > 0.0) ? gameBounds.size.width : MAX(kWidth, kHeight);
+        self.cachedScreenHeight = (gameBounds.size.height > 0.0) ? gameBounds.size.height : MIN(kWidth, kHeight);
         LOG(@"[RemoteWebViewOverlay] Game UIWindow bounds: %.0fx%.0f",
-            gameBounds.size.width, gameBounds.size.height);
+            self.cachedScreenWidth, self.cachedScreenHeight);
     } else {
-        self.cachedScreenWidth = kWidth;
-        self.cachedScreenHeight = kHeight;
+        self.cachedScreenWidth = MAX(kWidth, kHeight);
+        self.cachedScreenHeight = MIN(kWidth, kHeight);
         LOG(@"[RemoteWebViewOverlay] Fallback UIScreen: %.0fx%.0f",
             self.cachedScreenWidth, self.cachedScreenHeight);
     }
@@ -490,13 +496,14 @@ static CGFloat OverlayClamp(CGFloat value, CGFloat lower, CGFloat upper) {
         return NO;
     }
 
-    RemoteObjectRef config = [self call:wkConfigClass selector:"alloc"];
-    if (!config) {
+    RemoteObjectRef allocConfig = [self call:wkConfigClass selector:"alloc"];
+    if (!allocConfig) {
         LOG(@"[RemoteWebViewOverlay] WKWebViewConfiguration alloc failed");
         return NO;
     }
 
-    config = [self call:config selector:"init"];
+    RemoteObjectRef config = remote_msg_on_main_thread(
+        self.remoteCall, allocConfig, [self getSelector:"init"], NULL, NULL, 0);
     if (!config) {
         LOG(@"[RemoteWebViewOverlay] WKWebViewConfiguration init failed");
         return NO;

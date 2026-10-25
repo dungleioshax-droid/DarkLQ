@@ -1827,7 +1827,7 @@ replace_entry:
     }
 
     uint64_t trojanMemTemp =
-        ((uint64_t)exc.threadState.__sp & 0x7fffffffffULL) - 0x20000ULL;
+        ((uint64_t)exc.threadState.__sp & 0x7fffffffffULL) - 0x4000ULL;
     printf("(rc) trojanMemTemp: 0x%llx\n", trojanMemTemp);
     fflush(stdout);
 
@@ -1983,7 +1983,7 @@ replace_entry:
     }
 
     _trojanMem = RemoteArbCallWithTimeout(
-        100, self, mmap, 0, PAGE_SIZE, VM_PROT_READ | VM_PROT_WRITE,
+        100, self, mmap, 0, 0x40000ULL, VM_PROT_READ | VM_PROT_WRITE,
         MAP_PRIVATE | MAP_ANON, (uint64_t)-1, 0);
     if (!_trojanMem || _trojanMem == UINT64_MAX) {
         _trojanMem = 0;
@@ -1991,7 +1991,7 @@ replace_entry:
         return -1;
     }
 
-    RemoteArbCallWithTimeout(100, self, memset, _trojanMem, 0, PAGE_SIZE);
+    RemoteArbCallWithTimeout(100, self, memset, _trojanMem, 0, 0x40000ULL);
 
     _success = true;
     printf("(rc) Finished successfully\n");
@@ -2098,34 +2098,47 @@ replace_entry:
 }
 @end
 
-#define RC_STACK_FALLBACK_CAPACITY 0x20000ULL
+#define RC_TROJAN_MEM_DEFAULT_CAPACITY 0x40000ULL
+#define RC_STACK_FALLBACK_CAPACITY 0x3800ULL
 
 uint64_t remote_alloc_str(RemoteCall *proc, const char *str) {
+    if (!proc || !str || !proc.trojanMem)
+        return 0;
+
     uint64_t len = strlen(str) + 1;
-    if (proc.trojanMemIsStackFallback) {
-        uint64_t offset = (proc.trojanMemScratchOffset + 7) & ~7ULL;
-        if (offset + len > RC_STACK_FALLBACK_CAPACITY) {
-            offset = 0x200;
+    uint64_t capacity = proc.trojanMemIsStackFallback ? RC_STACK_FALLBACK_CAPACITY : RC_TROJAN_MEM_DEFAULT_CAPACITY;
+
+    uint64_t offset = (proc.trojanMemScratchOffset + 7) & ~7ULL;
+    if (offset + len > capacity) {
+        offset = 0x200;
+    }
+
+    if (offset + len <= capacity) {
+        uint64_t buf = proc.trojanMem + offset;
+        if ([proc remote_write:buf from:str size:len]) {
+            proc.trojanMemScratchOffset = offset + len;
+            return buf;
         }
-        if (offset + len <= RC_STACK_FALLBACK_CAPACITY) {
-            uint64_t buf = proc.trojanMem + offset;
+    }
+
+    if (!proc.trojanMemIsStackFallback) {
+        uint64_t buf = RemoteArbCall(proc, malloc, len);
+        if (buf) {
             if ([proc remote_write:buf from:str size:len]) {
-                proc.trojanMemScratchOffset = offset + len;
                 return buf;
             }
+            RemoteArbCall(proc, free, buf);
         }
-        return 0;
     }
-    uint64_t buf = RemoteArbCall(proc, malloc, len);
-    if (buf)
-        proc[buf].string = @(str);
-    return buf;
+    return 0;
 }
 
 uint64_t remote_sel(RemoteCall *proc, const char *name) {
     uint64_t str = remote_alloc_str(proc, name);
+    if (!str)
+        return 0;
     uint64_t sel = RemoteArbCall(proc, sel_registerName, str);
-    if (!proc.trojanMemIsStackFallback) {
+    if (str < proc.trojanMem || str >= proc.trojanMem + RC_TROJAN_MEM_DEFAULT_CAPACITY) {
         RemoteArbCall(proc, free, str);
     }
     return sel;
@@ -2133,8 +2146,10 @@ uint64_t remote_sel(RemoteCall *proc, const char *name) {
 
 uint64_t remote_getClass(RemoteCall *proc, const char *name) {
     uint64_t str = remote_alloc_str(proc, name);
+    if (!str)
+        return 0;
     uint64_t cls = RemoteArbCall(proc, objc_getClass, str);
-    if (!proc.trojanMemIsStackFallback) {
+    if (str < proc.trojanMem || str >= proc.trojanMem + RC_TROJAN_MEM_DEFAULT_CAPACITY) {
         RemoteArbCall(proc, free, str);
     }
     return cls;
@@ -2166,7 +2181,8 @@ uint64_t remote_NSString(RemoteCall *proc, const char *str) {
 
         uint64_t result = RemoteArbCall(proc, CFStringCreateWithCString, 0,
                                         resultCStr, kCFStringEncodingUTF8);
-        if (!proc.trojanMemIsStackFallback) {
+        if (resultCStr < proc.trojanMem ||
+            resultCStr >= proc.trojanMem + RC_TROJAN_MEM_DEFAULT_CAPACITY) {
             RemoteArbCall(proc, free, resultCStr);
         }
         return result;
@@ -2255,19 +2271,33 @@ static BOOL remote_invoke_selector_on_main_thread_raw(
     NSRecursiveLock *lock = [proc executionLock];
     [lock lock];
     @try {
-        uint64_t clsNSInvocation = remote_getClass(proc, "NSInvocation");
-        uint64_t selMethodSignatureForSelector =
-            remote_sel(proc, "methodSignatureForSelector:");
-        uint64_t selInvocationWithMethodSignature =
-            remote_sel(proc, "invocationWithMethodSignature:");
-        uint64_t selSetSelector = remote_sel(proc, "setSelector:");
-        uint64_t selSetArgumentAtIndex =
-            remote_sel(proc, "setArgument:atIndex:");
-        uint64_t selPerform = remote_sel(
-            proc, "performSelectorOnMainThread:withObject:waitUntilDone:");
-        uint64_t selInvokeWithTarget = remote_sel(proc, "invokeWithTarget:");
-        uint64_t selGetReturnValue = remote_sel(proc, "getReturnValue:");
-        uint64_t selMethodReturnLength = remote_sel(proc, "methodReturnLength");
+        static uint64_t clsNSInvocation = 0;
+        static uint64_t selMethodSignatureForSelector = 0;
+        static uint64_t selInvocationWithMethodSignature = 0;
+        static uint64_t selSetSelector = 0;
+        static uint64_t selSetArgumentAtIndex = 0;
+        static uint64_t selPerform = 0;
+        static uint64_t selInvokeWithTarget = 0;
+        static uint64_t selGetReturnValue = 0;
+        static uint64_t selMethodReturnLength = 0;
+        static uint64_t cachedProcTrojanMem = 0;
+
+        if (cachedProcTrojanMem != proc.trojanMem || !clsNSInvocation) {
+            cachedProcTrojanMem = proc.trojanMem;
+            clsNSInvocation = remote_getClass(proc, "NSInvocation");
+            selMethodSignatureForSelector =
+                remote_sel(proc, "methodSignatureForSelector:");
+            selInvocationWithMethodSignature =
+                remote_sel(proc, "invocationWithMethodSignature:");
+            selSetSelector = remote_sel(proc, "setSelector:");
+            selSetArgumentAtIndex =
+                remote_sel(proc, "setArgument:atIndex:");
+            selPerform = remote_sel(
+                proc, "performSelectorOnMainThread:withObject:waitUntilDone:");
+            selInvokeWithTarget = remote_sel(proc, "invokeWithTarget:");
+            selGetReturnValue = remote_sel(proc, "getReturnValue:");
+            selMethodReturnLength = remote_sel(proc, "methodReturnLength");
+        }
 
         if (!clsNSInvocation || !selMethodSignatureForSelector ||
             !selInvocationWithMethodSignature || !selSetSelector ||
@@ -2311,6 +2341,8 @@ static BOOL remote_invoke_selector_on_main_thread_raw(
             return NO;
         }
 
+        uint64_t maxCapacity = proc.trojanMemIsStackFallback ? PAGE_SIZE : RC_TROJAN_MEM_DEFAULT_CAPACITY;
+
         size_t cursor = 0;
         for (size_t i = 0; i < argCount; i++) {
             if (!argData[i] || argSizes[i] == 0) {
@@ -2319,7 +2351,7 @@ static BOOL remote_invoke_selector_on_main_thread_raw(
             }
 
             cursor = remote_main_thread_align(cursor);
-            if (cursor + argSizes[i] > PAGE_SIZE) {
+            if (cursor + argSizes[i] > maxCapacity) {
                 printf("(rc) NSInvocation arguments exceed trojanMem page\n");
                 return NO;
             }
@@ -2344,7 +2376,7 @@ static BOOL remote_invoke_selector_on_main_thread_raw(
             return YES;
 
         cursor = remote_main_thread_align(cursor);
-        if (cursor + actualReturnSize > PAGE_SIZE) {
+        if (cursor + actualReturnSize > maxCapacity) {
             printf("(rc) NSInvocation return value exceeds trojanMem page\n");
             return NO;
         }
@@ -2362,16 +2394,6 @@ static BOOL remote_invoke_selector_on_main_thread_raw(
 
 // Call a method on the Main Thread of the remote process and return its uint64
 // result.
-//
-// No-arg example:
-//   remote_msg_on_main_thread(proc, target, sel, NULL, NULL, 0)
-//
-// With args:
-//   CGRect frame1 = CGRectMake(100, 200, 300, 400);
-//   CGRect frame2 = CGRectMake(100, 200, 300, 400);
-//   const void *argsData[] = { &frame1, &frame2 };
-//   size_t argsSize[] = { sizeof(frame1), sizeof(frame2) };
-//   remote_msg_on_main_thread(proc, target, sel, argsData, argsSize, 2)
 uint64_t remote_msg_on_main_thread(RemoteCall *proc, uint64_t target,
                                    uint64_t selector,
                                    const void *const *argData,
@@ -2388,29 +2410,25 @@ uint64_t remote_msg_on_main_thread(RemoteCall *proc, uint64_t target,
     return ok ? returnValue : 0x0;
 }
 
-// Helper to get/set CGRect from double registers that we cannot modify via
-// normal thread state
+// Safe helper to get CGRect from remote UIWindow or UIView via main thread invocation
 CGRect remote_getCGRect(RemoteCall *proc, uint64_t obj, uint64_t sel) {
+    CGRect screenBounds = [[UIScreen mainScreen] bounds];
+    CGFloat sw = MAX(screenBounds.size.width, screenBounds.size.height);
+    CGFloat sh = MIN(screenBounds.size.width, screenBounds.size.height);
+    if (!proc || !obj || !sel) {
+        return CGRectMake(0, 0, sw, sh);
+    }
     NSRecursiveLock *lock = [proc executionLock];
     [lock lock];
     @try {
-        // Spill CGRect to double registers first
-        remote_msg(proc, obj, sel, 0, 0, 0, 0);
-
-        // -[CAMetalDrawable setDirtyRect:]: save double registers to address
-        // stp    d0, d1, [x0, #0x20]
-        // stp    d2, d3, [x0, #0x30]
-        // ret
-        uint64_t where = proc.trojanMem;
-        Class class = NSClassFromString(@"CAMetalDrawable");
-        Method method =
-            class_getInstanceMethod(class, @selector(setDirtyRect:));
-        void *setDoubleRegistersImp = method_getImplementation(method);
-        RemoteArbCall(proc, setDoubleRegistersImp, where - 0x20);
-
-        CGRect result;
-        [proc remoteRead:where to:&result size:sizeof(result)];
-        return result;
+        CGRect result = CGRectZero;
+        if (remote_invoke_selector_on_main_thread_raw(
+                proc, obj, sel, NULL, NULL, 0, &result, sizeof(result))) {
+            if (result.size.width > 0 && result.size.height > 0) {
+                return result;
+            }
+        }
+        return CGRectMake(0, 0, sw, sh);
     } @finally {
         [lock unlock];
     }
@@ -2418,25 +2436,11 @@ CGRect remote_getCGRect(RemoteCall *proc, uint64_t obj, uint64_t sel) {
 
 void remote_setCGRect(RemoteCall *proc, uint64_t obj, uint64_t sel,
                       CGRect newRect) {
-    NSRecursiveLock *lock = [proc executionLock];
-    [lock lock];
-    @try {
-        uint64_t where = proc.trojanMem;
-        [proc remote_write:where from:&newRect size:sizeof(newRect)];
-        // -[CAMetalDrawable dirtyRect]: spill to double registers
-        // ldp    d0, d1, [x0, #0x20]
-        // ldp    d2, d3, [x0, #0x30]
-        // ret
-        Class class = NSClassFromString(@"CAMetalDrawable");
-        Method method = class_getInstanceMethod(class, @selector(dirtyRect));
-        void *setDoubleRegistersImp = method_getImplementation(method);
-        RemoteArbCall(proc, setDoubleRegistersImp, where - 0x20);
-
-        // Now do the actual thing
-        remote_msg(proc, obj, sel, 0, 0, 0, 0);
-    } @finally {
-        [lock unlock];
-    }
+    if (!proc || !obj || !sel)
+        return;
+    const void *params[] = {&newRect};
+    size_t sizes[] = {sizeof(newRect)};
+    remote_msg_on_main_thread(proc, obj, sel, params, sizes, 1);
 }
 
 #pragma mark - iOS 16
@@ -4778,7 +4782,7 @@ static const char *rc_ios16_pacia_mode_name(int mode) {
     }
 
     uint64_t trojanMemTemp =
-        ((uint64_t)exc.threadState.__sp & 0x7fffffffffULL) - 0x20000ULL;
+        ((uint64_t)exc.threadState.__sp & 0x7fffffffffULL) - 0x4000ULL;
     printf("(rc) trojanMemTemp: 0x%llx\n", trojanMemTemp);
     fflush(stdout);
 
@@ -4968,30 +4972,41 @@ ios16_no_extra_thread:
     }
 
     if (!_creatingExtraThread) {
-        _trojanMem = trojanMemTemp;
-        _trojanMemIsStackFallback = true;
-        _trojanMemScratchOffset = 0;
-        uint8_t *zeroPage = calloc(1, PAGE_SIZE);
-        BOOL clearedStackScratch = zeroPage && [self remote_write:_trojanMem
-                                                             from:zeroPage
-                                                             size:PAGE_SIZE];
-        free(zeroPage);
-        RC_IOS16_DEBUG_LOG(
-            "(rc.iOS16) using stack fallback trojanMem=0x%llx clear=%d\n",
-            _trojanMem, clearedStackScratch);
-        fflush(stdout);
-        if (!clearedStackScratch) {
-            self.lastError = @"iOS16 RemoteCall couldn't clear the "
-                             @"stack-backed scratch page";
-            _trojanMem = 0;
+        uint64_t mmapAlloc = RemoteArbCallTempWithTimeout(
+            100, self, mmap, 0, 0x40000ULL, VM_PROT_READ | VM_PROT_WRITE,
+            MAP_PRIVATE | MAP_ANON, (uint64_t)-1, 0);
+        if (mmapAlloc && mmapAlloc != UINT64_MAX) {
+            _trojanMem = mmapAlloc;
             _trojanMemIsStackFallback = false;
             _trojanMemScratchOffset = 0;
-            [self destroyRemoteCall];
-            return -1;
+            RC_IOS16_DEBUG_LOG(
+                "(rc.iOS16) temp caller mmap trojanMem=0x%llx\n", _trojanMem);
+        } else {
+            _trojanMem = trojanMemTemp;
+            _trojanMemIsStackFallback = true;
+            _trojanMemScratchOffset = 0;
+            uint8_t *zeroPage = calloc(1, PAGE_SIZE);
+            BOOL clearedStackScratch = zeroPage && [self remote_write:_trojanMem
+                                                                 from:zeroPage
+                                                                 size:PAGE_SIZE];
+            free(zeroPage);
+            RC_IOS16_DEBUG_LOG(
+                "(rc.iOS16) using stack fallback trojanMem=0x%llx clear=%d\n",
+                _trojanMem, clearedStackScratch);
+            fflush(stdout);
+            if (!clearedStackScratch) {
+                self.lastError = @"iOS16 RemoteCall couldn't clear the "
+                                 @"stack-backed scratch page";
+                _trojanMem = 0;
+                _trojanMemIsStackFallback = false;
+                _trojanMemScratchOffset = 0;
+                [self destroyRemoteCall];
+                return -1;
+            }
         }
     } else {
         _trojanMem = RemoteArbCallWithTimeout(
-            100, self, mmap, 0, PAGE_SIZE, VM_PROT_READ | VM_PROT_WRITE,
+            100, self, mmap, 0, 0x40000ULL, VM_PROT_READ | VM_PROT_WRITE,
             MAP_PRIVATE | MAP_ANON, (uint64_t)-1, 0);
         _trojanMemIsStackFallback = false;
         _trojanMemScratchOffset = 0;
@@ -5007,7 +5022,7 @@ ios16_no_extra_thread:
     }
 
     if (!_trojanMemIsStackFallback) {
-        RemoteArbCallWithTimeout(100, self, memset, _trojanMem, 0, PAGE_SIZE);
+        RemoteArbCallWithTimeout(100, self, memset, _trojanMem, 0, 0x40000ULL);
     }
     _success = true;
     printf("(rc) Finished successfully\n");
