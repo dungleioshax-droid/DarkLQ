@@ -6,6 +6,7 @@
 #import "FreeFireManager.h"
 #import "../../../App/Configuration/Macros.h"
 #import "../../../App/Notifications/AppNotifications.h"
+#import "../../../App/Support/helper.h"
 #import "../../Overlay/RemoteWebViewOverlay.h"
 #import "../../Unity/Vector3.h"
 #import "FreeFireOffset.h"
@@ -102,7 +103,8 @@ NS_ASSUME_NONNULL_BEGIN
               if (self.binaryBase == 0) {
                   self.binaryBase = [self getFreeFireBaseAddress];
                   if (self.binaryBase != 0) {
-                      LOG(@"[FreeFire] Binary base: 0x%llx", self.binaryBase);
+                      LOG(@"[FreeFire] Binary base: 0x%lx",
+                          (unsigned long)self.binaryBase);
                   }
               }
 
