@@ -61,6 +61,9 @@ static NSMutableDictionary<NSString *, NSNumber *> *g_sbInvCache = nil;
 static NSRecursiveLock *g_sbLock = nil;
 static CFAbsoluteTime s_sbOverlayReadyAt = 0;
 
+static uint64_t ds_remote_class(RemoteCall *process, const char *name);
+static uint64_t ds_remote_sel(RemoteCall *process, const char *name);
+
 static void ds_sb_lock_init(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
