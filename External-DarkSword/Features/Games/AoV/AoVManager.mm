@@ -67,7 +67,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, assign) NSTimeInterval nextBattlePollTime;
 @property(nonatomic, assign) NSTimeInterval nextHackMapApplyTime;
 @property(nonatomic, strong) NSMutableSet<NSNumber *> *hackMapMarkers;
-@property(nonatomic, strong) RemoteWebViewOverlay *remoteWebViewOverlay;
+@property(nonatomic, strong, nullable) RemoteWebViewOverlay *remoteWebViewOverlay;
 
 - (void)notifyCameraHeightChangedWithRemoteCall:(RemoteCall *)remoteCall
                                    cameraSystem:(uintptr_t)cameraSystem;
