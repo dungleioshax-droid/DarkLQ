@@ -405,16 +405,12 @@ static Vector3 ReadActorPosition(RemoteCall *remoteCall, uintptr_t actor,
                                  uintptr_t logicActor) {
     VInt3 location =
         ReadMemorySafe<VInt3>(remoteCall, actor + kActorLinker_Location);
-    VInt3 forward =
-        ReadMemorySafe<VInt3>(remoteCall, actor + kActorLinker_Forward);
-    Vector3 position = FixedPosition(location, forward);
+    Vector3 position = Vector3((float)location.X * 0.001f, (float)location.Y * 0.001f, (float)location.Z * 0.001f);
 
     if (validOffsetPtr(logicActor)) {
         VInt3 logicLocation = ReadMemorySafe<VInt3>(
             remoteCall, logicActor + kLActorRoot_Location);
-        VInt3 logicForward =
-            ReadMemorySafe<VInt3>(remoteCall, logicActor + kLActorRoot_Forward);
-        Vector3 logicPosition = FixedPosition(logicLocation, logicForward);
+        Vector3 logicPosition = Vector3((float)logicLocation.X * 0.001f, (float)logicLocation.Y * 0.001f, (float)logicLocation.Z * 0.001f);
         if (fabsf(logicPosition.x) > 0.001f || fabsf(logicPosition.z) > 0.001f)
             position = logicPosition;
     }

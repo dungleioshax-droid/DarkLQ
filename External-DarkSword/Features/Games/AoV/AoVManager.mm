@@ -53,7 +53,7 @@ NS_ASSUME_NONNULL_BEGIN
 @implementation AoVEntitySnapshot
 @end
 
-@interface AoVManager ()
+@interface AoVManager () <RemoteWebViewOverlayDelegate>
 @property(nonatomic, assign) BOOL isRunning;
 @property(nonatomic, assign) uint64_t unityFrameworkBase;
 @property(nonatomic, copy) NSData *viewProjectionData;
@@ -170,6 +170,7 @@ static constexpr int kMaxHackMapWorldActors = 128;
                               [[RemoteWebViewOverlay alloc]
                                   initWithRemoteCall:callForOverlay
                                        isSpringBoard:isSpringBoard];
+                          self.remoteWebViewOverlay.delegate = self;
                       }
                       if ([self.remoteWebViewOverlay setupBaseOverlay]) {
                           LOG(@"[AoV] WKWebView overlay setup done (%s).",
@@ -180,14 +181,21 @@ static constexpr int kMaxHackMapWorldActors = 128;
                       }
                   }
 
+                  CFAbsoluteTime frameStart = CFAbsoluteTimeGetCurrent();
                   if (self.isESPEnabled) {
                       [self updateSnapshot:self.remoteCall];
                   }
                   [self updateCameraHeight:self.remoteCall];
                   [self updateHackMapWithRemoteCall:self.remoteCall];
+
+                  CFAbsoluteTime frameEnd = CFAbsoluteTimeGetCurrent();
+                  double elapsed = frameEnd - frameStart;
+                  double targetInterval = 1.0 / 60.0;
+                  if (elapsed < targetInterval) {
+                      usleep((useconds_t)((targetInterval - elapsed) * 1000000.0));
+                  }
               }
           }
-          usleep(16000);
       }
       LOG(@"[AoV] Snapshot loop stopped.");
     });
@@ -232,6 +240,43 @@ static constexpr int kMaxHackMapWorldActors = 128;
 
 - (void)clearOverlayTargets {
     [self.remoteWebViewOverlay clearTargets];
+}
+
+#pragma mark - RemoteWebViewOverlayDelegate
+
+- (void)overlayDidToggleLine:(BOOL)enabled {
+    @synchronized(self) {
+        self.showsLine = enabled;
+    }
+    LOG(@"[AoV] Overlay menu toggled line: %d", enabled);
+}
+
+- (void)overlayDidToggleBox:(BOOL)enabled {
+    @synchronized(self) {
+        self.showsBox = enabled;
+    }
+    LOG(@"[AoV] Overlay menu toggled box: %d", enabled);
+}
+
+- (void)overlayDidToggleHealth:(BOOL)enabled {
+    @synchronized(self) {
+        self.showsHealth = enabled;
+    }
+    LOG(@"[AoV] Overlay menu toggled health: %d", enabled);
+}
+
+- (void)overlayDidToggleName:(BOOL)enabled {
+    @synchronized(self) {
+        self.showsName = enabled;
+    }
+    LOG(@"[AoV] Overlay menu toggled name: %d", enabled);
+}
+
+- (void)overlayDidToggleHackMap:(BOOL)enabled {
+    @synchronized(self) {
+        self.isHackMapEnabled = enabled;
+    }
+    LOG(@"[AoV] Overlay menu toggled hack map: %d", enabled);
 }
 
 - (void)setOverlayMenuVisible:(BOOL)visible {

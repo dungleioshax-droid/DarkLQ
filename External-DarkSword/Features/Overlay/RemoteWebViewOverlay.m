@@ -41,8 +41,14 @@ static CGFloat OverlayClamp(CGFloat value, CGFloat lower, CGFloat upper) {
 @property(nonatomic, assign, readwrite) RemoteObjectRef webView;
 @property(nonatomic, assign) RemoteObjectRef menuWebView;
 @property(nonatomic, assign) RemoteObjectRef floatButtonWebView;
-@property(nonatomic, assign) RemoteObjectRef springBoardLabel;
-@property(nonatomic, assign) RemoteObjectRef springBoardContainer;
+@property(nonatomic, assign) RemoteObjectRef sbMenuWindow;
+@property(nonatomic, assign) RemoteObjectRef sbFabButton;
+@property(nonatomic, assign) RemoteObjectRef sbMenuPanel;
+@property(nonatomic, assign) RemoteObjectRef sbLineBtn;
+@property(nonatomic, assign) RemoteObjectRef sbBoxBtn;
+@property(nonatomic, assign) RemoteObjectRef sbHealthBtn;
+@property(nonatomic, assign) RemoteObjectRef sbNameBtn;
+@property(nonatomic, assign) RemoteObjectRef sbMapBtn;
 @property(nonatomic, assign, readwrite) BOOL isOverlayReady;
 @property(nonatomic, assign, readwrite) CGFloat cachedScreenWidth;
 @property(nonatomic, assign, readwrite) CGFloat cachedScreenHeight;
@@ -404,6 +410,32 @@ static BOOL ds_remote_set_text_on_main(RemoteCall *process, uint64_t label,
     return sent;
 }
 
+static BOOL ds_remote_get_bool_on_main(RemoteCall *process, uint64_t target, const char *selectorName) {
+    if (!process || !target || !process.trojanMem) return NO;
+    uint64_t result = 0;
+    BOOL invoked = ds_remote_invoke_on_main_result(process, target, ds_remote_sel(process, selectorName),
+                                                   NULL, 0, &result, sizeof(result), NO);
+    return (invoked && (result & 0xFF) != 0);
+}
+
+static BOOL ds_remote_set_button_title(RemoteCall *process, uint64_t button, NSString *title) {
+    if (!process || !button || !process.trojanMem || !title) return NO;
+    uint64_t remoteText = ds_remote_create_string(process, title);
+    if (!remoteText) return NO;
+    uint64_t state = 0; // UIControlStateNormal
+    DSRemoteArg args[2] = {
+        { &remoteText, sizeof(remoteText) },
+        { &state, sizeof(state) }
+    };
+    BOOL sent = ds_remote_invoke_on_main_result(process, button, ds_remote_sel(process, "setTitle:forState:"),
+                                                args, 2, NULL, 0, NO);
+    uint64_t release = ds_remote_sel(process, "release");
+    if (release && process.trojanMem) {
+        remote_msg(process, remoteText, release, 0, 0, 0, 0);
+    }
+    return sent;
+}
+
 static const NSUInteger kMaxSpringBoardSlots = 5;
 
 typedef struct {
@@ -430,23 +462,30 @@ typedef struct {
 } SpringBoardESPSlot;
 
 static inline BOOL IsFrameSignificantlyDifferent(CGRect a, CGRect b) {
-    return fabs(a.origin.x - b.origin.x) > 0.8 ||
-           fabs(a.origin.y - b.origin.y) > 0.8 ||
-           fabs(a.size.width - b.size.width) > 0.8 ||
-           fabs(a.size.height - b.size.height) > 0.8;
+    return fabs(a.origin.x - b.origin.x) > 0.05 ||
+           fabs(a.origin.y - b.origin.y) > 0.05 ||
+           fabs(a.size.width - b.size.width) > 0.05 ||
+           fabs(a.size.height - b.size.height) > 0.05;
 }
 
 static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
                                                 CGFloat angleA, CGFloat angleB,
                                                 CGPoint centerA, CGPoint centerB) {
-    return fabs(lenA - lenB) > 0.8 ||
-           fabs(angleA - angleB) > 0.01 ||
-           fabs(centerA.x - centerB.x) > 0.8 ||
-           fabs(centerA.y - centerB.y) > 0.8;
+    return fabs(lenA - lenB) > 0.05 ||
+           fabs(angleA - angleB) > 0.0005 ||
+           fabs(centerA.x - centerB.x) > 0.05 ||
+           fabs(centerA.y - centerB.y) > 0.05;
 }
 
 @implementation RemoteWebViewOverlay {
     SpringBoardESPSlot _espSlots[kMaxSpringBoardSlots];
+    BOOL _sbMenuOpen;
+    BOOL _sbLineEnabled;
+    BOOL _sbBoxEnabled;
+    BOOL _sbHealthEnabled;
+    BOOL _sbNameEnabled;
+    BOOL _sbMapEnabled;
+    CFAbsoluteTime _lastMenuPollTime;
 }
 
 #pragma mark - Init
@@ -466,8 +505,21 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
         _webView = 0;
         _menuWebView = 0;
         _floatButtonWebView = 0;
-        _springBoardLabel = 0;
-        _springBoardContainer = 0;
+        _sbMenuWindow = 0;
+        _sbFabButton = 0;
+        _sbMenuPanel = 0;
+        _sbLineBtn = 0;
+        _sbBoxBtn = 0;
+        _sbHealthBtn = 0;
+        _sbNameBtn = 0;
+        _sbMapBtn = 0;
+        _sbMenuOpen = NO;
+        _sbLineEnabled = YES;
+        _sbBoxEnabled = YES;
+        _sbHealthEnabled = YES;
+        _sbNameEnabled = YES;
+        _sbMapEnabled = NO;
+        _lastMenuPollTime = 0;
         _isOverlayReady = NO;
         _cachedScreenWidth = 0;
         _cachedScreenHeight = 0;
@@ -850,18 +902,14 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
 
     uint64_t allocSEL = ds_remote_sel(self.remoteCall, "alloc");
     uint64_t window = remote_msg(self.remoteCall, windowClass, allocSEL, 0, 0, 0, 0);
-    uint64_t container = remote_msg(self.remoteCall, viewClass, allocSEL, 0, 0, 0, 0);
-    uint64_t label = remote_msg(self.remoteCall, labelClass, allocSEL, 0, 0, 0, 0);
 
-    if (!window || !container || !label) {
-        LOG(@"[RemoteWebViewOverlay] Failed to alloc SpringBoard window/container/label");
+    if (!window) {
+        LOG(@"[RemoteWebViewOverlay] Failed to alloc SpringBoard window");
         return NO;
     }
 
-    if (!ds_remote_invoke_noarg_on_main(self.remoteCall, window, "init") ||
-        !ds_remote_invoke_noarg_on_main(self.remoteCall, container, "init") ||
-        !ds_remote_invoke_noarg_on_main(self.remoteCall, label, "init")) {
-        LOG(@"[RemoteWebViewOverlay] Failed to init SpringBoard window/container/label on main thread");
+    if (!ds_remote_invoke_noarg_on_main(self.remoteCall, window, "init")) {
+        LOG(@"[RemoteWebViewOverlay] Failed to init SpringBoard window on main thread");
         return NO;
     }
 
@@ -877,13 +925,6 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
     ds_remote_set_u64_on_main(self.remoteCall, window, "setUserInteractionEnabled:", 0);
     ds_remote_set_u64_on_main(self.remoteCall, window, "setOpaque:", 0);
 
-    // Position compact HUD pill at top center
-    CGFloat hudW = 180.0;
-    CGFloat hudH = 22.0;
-    CGRect hudFrame = CGRectMake(MAX(0.0, (screenW - hudW) * 0.5), 8.0, hudW, hudH);
-    ds_remote_set_rect_on_main(self.remoteCall, container, "setFrame:", hudFrame);
-    ds_remote_set_rect_on_main(self.remoteCall, label, "setFrame:", CGRectMake(0, 0, hudW, hudH));
-
     uint64_t winLayer = ds_remote_get_object_on_main(self.remoteCall, window, "layer");
     if (winLayer) {
         ds_remote_set_double_on_main(self.remoteCall, winLayer, "setSpeed:", 999.0);
@@ -896,32 +937,115 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
     uint64_t blackColor = ds_remote_get_retained_object_on_main(self.remoteCall, colorClass, "blackColor");
     uint64_t darkBgColor = ds_remote_get_retained_object_on_main(self.remoteCall, colorClass, "darkGrayColor");
     uint64_t redCGColor = redColor ? ds_remote_get_object_on_main(self.remoteCall, redColor, "CGColor") : 0;
+    uint64_t greenCGColor = greenColor ? ds_remote_get_object_on_main(self.remoteCall, greenColor, "CGColor") : 0;
 
     if (clearColor) {
         ds_perform_on_springboard_main(self.remoteCall, window, ds_remote_sel(self.remoteCall, "setBackgroundColor:"), clearColor, YES);
-        ds_perform_on_springboard_main(self.remoteCall, label, ds_remote_sel(self.remoteCall, "setBackgroundColor:"), clearColor, YES);
-    }
-    if (darkBgColor) {
-        ds_perform_on_springboard_main(self.remoteCall, container, ds_remote_sel(self.remoteCall, "setBackgroundColor:"), darkBgColor, YES);
-    }
-    if (whiteColor) {
-        ds_perform_on_springboard_main(self.remoteCall, label, ds_remote_sel(self.remoteCall, "setTextColor:"), whiteColor, YES);
     }
 
-    ds_remote_set_u64_on_main(self.remoteCall, label, "setTextAlignment:", (uint64_t)NSTextAlignmentCenter);
-    ds_remote_set_double_on_main(self.remoteCall, container, "setAlpha:", 0.85);
+    // Create SpringBoard Floating Menu Window & Icon Button
+    uint64_t buttonClass = ds_remote_class(self.remoteCall, "UIButton");
+    uint64_t menuWin = remote_msg(self.remoteCall, windowClass, allocSEL, 0, 0, 0, 0);
+    if (menuWin && ds_remote_invoke_noarg_on_main(self.remoteCall, menuWin, "init")) {
+        ds_remote_set_rect_on_main(self.remoteCall, menuWin, "setFrame:", CGRectMake(15, 60, 44, 44));
+        ds_perform_on_springboard_main(self.remoteCall, menuWin, ds_remote_sel(self.remoteCall, "setWindowScene:"), scene, YES);
+        ds_remote_set_double_on_main(self.remoteCall, menuWin, "setWindowLevel:", 10000020.0);
+        ds_remote_set_u64_on_main(self.remoteCall, menuWin, "setUserInteractionEnabled:", 1);
+        ds_remote_set_u64_on_main(self.remoteCall, menuWin, "setOpaque:", 0);
+        if (clearColor) {
+            ds_perform_on_springboard_main(self.remoteCall, menuWin, ds_remote_sel(self.remoteCall, "setBackgroundColor:"), clearColor, YES);
+        }
+        uint64_t mWinLayer = ds_remote_get_object_on_main(self.remoteCall, menuWin, "layer");
+        if (mWinLayer) {
+            ds_remote_set_double_on_main(self.remoteCall, mWinLayer, "setSpeed:", 999.0);
+        }
+        ds_remote_set_u64_on_main(self.remoteCall, menuWin, "setHidden:", 0);
+        self.sbMenuWindow = menuWin;
 
-    uint64_t containerLayer = ds_remote_get_object_on_main(self.remoteCall, container, "layer");
-    if (containerLayer) {
-        ds_remote_set_double_on_main(self.remoteCall, containerLayer, "setCornerRadius:", 5.0);
-        ds_remote_set_u64_on_main(self.remoteCall, containerLayer, "setMasksToBounds:", 1);
-        ds_remote_set_double_on_main(self.remoteCall, containerLayer, "setSpeed:", 999.0);
+        // Floating Action Icon Button ("⚔️")
+        uint64_t fab = 0;
+        if (buttonClass) {
+            uint64_t btnType = 0;
+            DSRemoteArg btnArg = { &btnType, sizeof(btnType) };
+            ds_remote_invoke_on_main_result(self.remoteCall, buttonClass, ds_remote_sel(self.remoteCall, "buttonWithType:"), &btnArg, 1, &fab, sizeof(fab), YES);
+        }
+        if (fab) {
+            ds_remote_set_rect_on_main(self.remoteCall, fab, "setFrame:", CGRectMake(0, 0, 44, 44));
+            if (blackColor) {
+                ds_perform_on_springboard_main(self.remoteCall, fab, ds_remote_sel(self.remoteCall, "setBackgroundColor:"), blackColor, YES);
+            }
+            ds_remote_set_double_on_main(self.remoteCall, fab, "setAlpha:", 0.90);
+            ds_remote_set_u64_on_main(self.remoteCall, fab, "setChangesSelectionAsPrimaryAction:", 1);
+            uint64_t fabLayer = ds_remote_get_object_on_main(self.remoteCall, fab, "layer");
+            if (fabLayer) {
+                ds_remote_set_double_on_main(self.remoteCall, fabLayer, "setCornerRadius:", 22.0);
+                ds_remote_set_u64_on_main(self.remoteCall, fabLayer, "setMasksToBounds:", 1);
+                ds_remote_set_double_on_main(self.remoteCall, fabLayer, "setBorderWidth:", 1.5);
+                if (greenCGColor) ds_remote_set_u64_on_main(self.remoteCall, fabLayer, "setBorderColor:", greenCGColor);
+                ds_remote_set_double_on_main(self.remoteCall, fabLayer, "setSpeed:", 999.0);
+            }
+            ds_remote_set_button_title(self.remoteCall, fab, @"⚔️");
+            ds_perform_on_springboard_main(self.remoteCall, menuWin, ds_remote_sel(self.remoteCall, "addSubview:"), fab, YES);
+            self.sbFabButton = fab;
+        }
+
+        // Expandable Menu Panel
+        uint64_t panel = remote_msg(self.remoteCall, viewClass, allocSEL, 0, 0, 0, 0);
+        if (panel && ds_remote_invoke_noarg_on_main(self.remoteCall, panel, "init")) {
+            ds_remote_set_rect_on_main(self.remoteCall, panel, "setFrame:", CGRectMake(0, 48, 160, 165));
+            if (blackColor) {
+                ds_perform_on_springboard_main(self.remoteCall, panel, ds_remote_sel(self.remoteCall, "setBackgroundColor:"), blackColor, YES);
+            }
+            ds_remote_set_double_on_main(self.remoteCall, panel, "setAlpha:", 0.94);
+            ds_remote_set_u64_on_main(self.remoteCall, panel, "setHidden:", 1);
+            uint64_t pLayer = ds_remote_get_object_on_main(self.remoteCall, panel, "layer");
+            if (pLayer) {
+                ds_remote_set_double_on_main(self.remoteCall, pLayer, "setCornerRadius:", 8.0);
+                ds_remote_set_u64_on_main(self.remoteCall, pLayer, "setMasksToBounds:", 1);
+                ds_remote_set_double_on_main(self.remoteCall, pLayer, "setBorderWidth:", 1.0);
+                if (greenCGColor) ds_remote_set_u64_on_main(self.remoteCall, pLayer, "setBorderColor:", greenCGColor);
+                ds_remote_set_double_on_main(self.remoteCall, pLayer, "setSpeed:", 999.0);
+            }
+
+            // Panel Title Header
+            uint64_t pTitle = remote_msg(self.remoteCall, labelClass, allocSEL, 0, 0, 0, 0);
+            if (pTitle && ds_remote_invoke_noarg_on_main(self.remoteCall, pTitle, "init")) {
+                ds_remote_set_rect_on_main(self.remoteCall, pTitle, "setFrame:", CGRectMake(0, 4, 160, 18));
+                ds_remote_set_u64_on_main(self.remoteCall, pTitle, "setTextAlignment:", (uint64_t)NSTextAlignmentCenter);
+                if (greenColor) ds_perform_on_springboard_main(self.remoteCall, pTitle, ds_remote_sel(self.remoteCall, "setTextColor:"), greenColor, YES);
+                ds_remote_set_text_on_main(self.remoteCall, pTitle, @"⚔️ DarkLQ AoV");
+                ds_perform_on_springboard_main(self.remoteCall, panel, ds_remote_sel(self.remoteCall, "addSubview:"), pTitle, YES);
+            }
+
+            // 5 Menu Toggle Buttons
+            const char *itemTitles[] = { "ESP Line: ON", "ESP Box: ON", "ESP HP: ON", "ESP Name: ON", "Hack Map: OFF" };
+            RemoteObjectRef *btnOut[] = { &_sbLineBtn, &_sbBoxBtn, &_sbHealthBtn, &_sbNameBtn, &_sbMapBtn };
+            for (int b = 0; b < 5; b++) {
+                uint64_t mBtn = 0;
+                uint64_t bType = 0;
+                DSRemoteArg mArg = { &bType, sizeof(bType) };
+                ds_remote_invoke_on_main_result(self.remoteCall, buttonClass, ds_remote_sel(self.remoteCall, "buttonWithType:"), &mArg, 1, &mBtn, sizeof(mBtn), YES);
+                if (mBtn) {
+                    ds_remote_set_rect_on_main(self.remoteCall, mBtn, "setFrame:", CGRectMake(8, 25 + b * 27, 144, 23));
+                    if (darkBgColor) ds_perform_on_springboard_main(self.remoteCall, mBtn, ds_remote_sel(self.remoteCall, "setBackgroundColor:"), darkBgColor, YES);
+                    ds_remote_set_u64_on_main(self.remoteCall, mBtn, "setChangesSelectionAsPrimaryAction:", 1);
+                    uint64_t mbLayer = ds_remote_get_object_on_main(self.remoteCall, mBtn, "layer");
+                    if (mbLayer) {
+                        ds_remote_set_double_on_main(self.remoteCall, mbLayer, "setCornerRadius:", 4.0);
+                        ds_remote_set_u64_on_main(self.remoteCall, mbLayer, "setMasksToBounds:", 1);
+                        ds_remote_set_double_on_main(self.remoteCall, mbLayer, "setBorderWidth:", 0.8);
+                        if (greenCGColor) ds_remote_set_u64_on_main(self.remoteCall, mbLayer, "setBorderColor:", greenCGColor);
+                        ds_remote_set_double_on_main(self.remoteCall, mbLayer, "setSpeed:", 999.0);
+                    }
+                    ds_remote_set_button_title(self.remoteCall, mBtn, [NSString stringWithUTF8String:itemTitles[b]]);
+                    ds_perform_on_springboard_main(self.remoteCall, panel, ds_remote_sel(self.remoteCall, "addSubview:"), mBtn, YES);
+                    *btnOut[b] = mBtn;
+                }
+            }
+            ds_perform_on_springboard_main(self.remoteCall, menuWin, ds_remote_sel(self.remoteCall, "addSubview:"), panel, YES);
+            self.sbMenuPanel = panel;
+        }
     }
-
-    ds_remote_set_text_on_main(self.remoteCall, label, @"DarkLQ AoV ESP");
-
-    ds_perform_on_springboard_main(self.remoteCall, container, ds_remote_sel(self.remoteCall, "addSubview:"), label, YES);
-    ds_perform_on_springboard_main(self.remoteCall, window, ds_remote_sel(self.remoteCall, "addSubview:"), container, YES);
 
     // Create 5 native ESP slots for 5 enemy heroes
     uint64_t fontClass = ds_remote_class(self.remoteCall, "UIFont");
@@ -1030,12 +1154,10 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
 
     self.window = window;
     self.parentView = window;
-    self.springBoardLabel = label;
-    self.springBoardContainer = container;
     self.isOverlayReady = YES;
     s_sbOverlayReadyAt = CFAbsoluteTimeGetCurrent();
 
-    LOG(@"[RemoteWebViewOverlay] SpringBoard overlay window ready with 5 ESP slots (window=0x%llx, scene=0x%llx)", window, scene);
+    LOG(@"[RemoteWebViewOverlay] SpringBoard overlay window ready with 5 ESP slots and floating menu (window=0x%llx, menuWin=0x%llx)", window, self.sbMenuWindow);
     return YES;
 }
 
@@ -1389,7 +1511,7 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
 
         CGFloat sw = self.cachedScreenWidth > 0 ? self.cachedScreenWidth : MAX(kWidth, kHeight);
         CGFloat sh = self.cachedScreenHeight > 0 ? self.cachedScreenHeight : MIN(kWidth, kHeight);
-        CGPoint startPoint = CGPointMake(sw * 0.5, 30.0);
+        CGPoint startPoint = CGPointMake(sw * 0.5, 0.0);
 
         NSUInteger targetCount = targets.count;
         for (NSUInteger i = 0; i < kMaxSpringBoardSlots; i++) {
@@ -1465,9 +1587,9 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
                                 ? [NSString stringWithFormat:@"%@ %dm", name, dist]
                                 : (drawName ? name : [NSString stringWithFormat:@"%dm", dist]);
 
-                            CGFloat labelW = MAX(bw + 20.0, 65.0);
-                            CGFloat lx = hasBox ? (bx + (bw - labelW) * 0.5) : (sx - labelW * 0.5);
-                            CGFloat ly = hasBox ? (by - 21.0) : (sy - 21.0);
+                            CGFloat labelW = 75.0;
+                            CGFloat lx = (hx > 0.0 ? hx : sx) - labelW * 0.5;
+                            CGFloat ly = (by > 0.0 ? by - 16.0 : (hy > 0.0 ? hy - 16.0 : sy - 16.0));
                             CGRect newLabel = CGRectMake(lx, ly, labelW, 14.0);
 
                             if (!slot->isNameVisible) {
@@ -1608,13 +1730,82 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
             }
         }
 
-        // Top HUD badge update (throttled to 1 FPS = 1.0s)
-        if (self.springBoardLabel) {
-            static CFAbsoluteTime lastBadgeUpdate = 0;
-            if (now - lastBadgeUpdate >= 1.0) {
-                lastBadgeUpdate = now;
-                NSString *badge = [NSString stringWithFormat:@"AoV ESP [Dich: %lu]", (unsigned long)targetCount];
-                ds_remote_set_text_on_main(self.remoteCall, self.springBoardLabel, badge);
+        // Floating Menu on SpringBoard (Poll every 0.1s)
+        if (self.sbFabButton && (now - _lastMenuPollTime >= 0.1)) {
+            _lastMenuPollTime = now;
+            BOOL fabSelected = ds_remote_get_bool_on_main(self.remoteCall, self.sbFabButton, "isSelected");
+            if (fabSelected != _sbMenuOpen) {
+                _sbMenuOpen = fabSelected;
+                if (_sbMenuOpen) {
+                    ds_remote_set_u64_on_main(self.remoteCall, self.sbMenuPanel, "setHidden:", 0);
+                    ds_remote_set_rect_on_main(self.remoteCall, self.sbMenuWindow, "setFrame:", CGRectMake(15, 60, 160, 218));
+                } else {
+                    ds_remote_set_u64_on_main(self.remoteCall, self.sbMenuPanel, "setHidden:", 1);
+                    ds_remote_set_rect_on_main(self.remoteCall, self.sbMenuWindow, "setFrame:", CGRectMake(15, 60, 44, 44));
+                }
+            }
+
+            if (_sbMenuOpen) {
+                // Poll Line Toggle
+                if (self.sbLineBtn) {
+                    BOOL lineSel = ds_remote_get_bool_on_main(self.remoteCall, self.sbLineBtn, "isSelected");
+                    BOOL lineOn = !lineSel;
+                    if (lineOn != _sbLineEnabled) {
+                        _sbLineEnabled = lineOn;
+                        ds_remote_set_button_title(self.remoteCall, self.sbLineBtn, lineOn ? @"ESP Line: ON" : @"ESP Line: OFF");
+                        if ([self.delegate respondsToSelector:@selector(overlayDidToggleLine:)]) {
+                            [self.delegate overlayDidToggleLine:lineOn];
+                        }
+                    }
+                }
+                // Poll Box Toggle
+                if (self.sbBoxBtn) {
+                    BOOL boxSel = ds_remote_get_bool_on_main(self.remoteCall, self.sbBoxBtn, "isSelected");
+                    BOOL boxOn = !boxSel;
+                    if (boxOn != _sbBoxEnabled) {
+                        _sbBoxEnabled = boxOn;
+                        ds_remote_set_button_title(self.remoteCall, self.sbBoxBtn, boxOn ? @"ESP Box: ON" : @"ESP Box: OFF");
+                        if ([self.delegate respondsToSelector:@selector(overlayDidToggleBox:)]) {
+                            [self.delegate overlayDidToggleBox:boxOn];
+                        }
+                    }
+                }
+                // Poll Health Toggle
+                if (self.sbHealthBtn) {
+                    BOOL hpSel = ds_remote_get_bool_on_main(self.remoteCall, self.sbHealthBtn, "isSelected");
+                    BOOL hpOn = !hpSel;
+                    if (hpOn != _sbHealthEnabled) {
+                        _sbHealthEnabled = hpOn;
+                        ds_remote_set_button_title(self.remoteCall, self.sbHealthBtn, hpOn ? @"ESP HP: ON" : @"ESP HP: OFF");
+                        if ([self.delegate respondsToSelector:@selector(overlayDidToggleHealth:)]) {
+                            [self.delegate overlayDidToggleHealth:hpOn];
+                        }
+                    }
+                }
+                // Poll Name Toggle
+                if (self.sbNameBtn) {
+                    BOOL nameSel = ds_remote_get_bool_on_main(self.remoteCall, self.sbNameBtn, "isSelected");
+                    BOOL nameOn = !nameSel;
+                    if (nameOn != _sbNameEnabled) {
+                        _sbNameEnabled = nameOn;
+                        ds_remote_set_button_title(self.remoteCall, self.sbNameBtn, nameOn ? @"ESP Name: ON" : @"ESP Name: OFF");
+                        if ([self.delegate respondsToSelector:@selector(overlayDidToggleName:)]) {
+                            [self.delegate overlayDidToggleName:nameOn];
+                        }
+                    }
+                }
+                // Poll Map Toggle
+                if (self.sbMapBtn) {
+                    BOOL mapSel = ds_remote_get_bool_on_main(self.remoteCall, self.sbMapBtn, "isSelected");
+                    BOOL mapOn = mapSel;
+                    if (mapOn != _sbMapEnabled) {
+                        _sbMapEnabled = mapOn;
+                        ds_remote_set_button_title(self.remoteCall, self.sbMapBtn, mapOn ? @"Hack Map: ON" : @"Hack Map: OFF");
+                        if ([self.delegate respondsToSelector:@selector(overlayDidToggleHackMap:)]) {
+                            [self.delegate overlayDidToggleHackMap:mapOn];
+                        }
+                    }
+                }
             }
         }
         return YES;
@@ -1732,9 +1923,6 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
             slot->lastTextUpdate = 0;
             slot->lastDistance = 0;
         }
-        if (self.springBoardLabel) {
-            ds_remote_set_text_on_main(self.remoteCall, self.springBoardLabel, @"AoV ESP [0]");
-        }
         return YES;
     }
 
@@ -1758,24 +1946,35 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
     if (self.isSpringBoard) {
         ds_inv_cache_clear(self.remoteCall);
         s_sbOverlayReadyAt = 0;
-        for (NSUInteger i = 0; i < kMaxSpringBoardSlots; i++) {
-            SpringBoardESPSlot *slot = &_espSlots[i];
-            uint64_t removeSEL = ds_remote_sel(self.remoteCall, "removeFromSuperview");
-            if (removeSEL) {
+        uint64_t removeSEL = ds_remote_sel(self.remoteCall, "removeFromSuperview");
+        if (removeSEL) {
+            for (NSUInteger i = 0; i < kMaxSpringBoardSlots; i++) {
+                SpringBoardESPSlot *slot = &_espSlots[i];
                 if (slot->boxView) ds_perform_on_springboard_main(self.remoteCall, slot->boxView, removeSEL, 0, YES);
                 if (slot->hpBgView) ds_perform_on_springboard_main(self.remoteCall, slot->hpBgView, removeSEL, 0, YES);
                 if (slot->nameLabel) ds_perform_on_springboard_main(self.remoteCall, slot->nameLabel, removeSEL, 0, YES);
                 if (slot->lineView) ds_perform_on_springboard_main(self.remoteCall, slot->lineView, removeSEL, 0, YES);
+                memset(slot, 0, sizeof(SpringBoardESPSlot));
             }
-            memset(slot, 0, sizeof(SpringBoardESPSlot));
+            if (self.sbFabButton) ds_perform_on_springboard_main(self.remoteCall, self.sbFabButton, removeSEL, 0, YES);
+            if (self.sbLineBtn) ds_perform_on_springboard_main(self.remoteCall, self.sbLineBtn, removeSEL, 0, YES);
+            if (self.sbBoxBtn) ds_perform_on_springboard_main(self.remoteCall, self.sbBoxBtn, removeSEL, 0, YES);
+            if (self.sbHealthBtn) ds_perform_on_springboard_main(self.remoteCall, self.sbHealthBtn, removeSEL, 0, YES);
+            if (self.sbNameBtn) ds_perform_on_springboard_main(self.remoteCall, self.sbNameBtn, removeSEL, 0, YES);
+            if (self.sbMapBtn) ds_perform_on_springboard_main(self.remoteCall, self.sbMapBtn, removeSEL, 0, YES);
+            if (self.sbMenuPanel) ds_perform_on_springboard_main(self.remoteCall, self.sbMenuPanel, removeSEL, 0, YES);
         }
-        if (self.springBoardContainer) {
-            uint64_t removeSEL = ds_remote_sel(self.remoteCall, "removeFromSuperview");
-            if (removeSEL) {
-                ds_perform_on_springboard_main(self.remoteCall, self.springBoardContainer, removeSEL, 0, YES);
-            }
-            self.springBoardContainer = 0;
-            self.springBoardLabel = 0;
+        self.sbFabButton = 0;
+        self.sbLineBtn = 0;
+        self.sbBoxBtn = 0;
+        self.sbHealthBtn = 0;
+        self.sbNameBtn = 0;
+        self.sbMapBtn = 0;
+        self.sbMenuPanel = 0;
+        _sbMenuOpen = NO;
+        if (self.sbMenuWindow) {
+            ds_remote_set_u64_on_main(self.remoteCall, self.sbMenuWindow, "setHidden:", 1);
+            self.sbMenuWindow = 0;
         }
         if (self.window) {
             ds_remote_set_u64_on_main(self.remoteCall, self.window, "setHidden:", 1);
