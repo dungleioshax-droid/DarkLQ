@@ -689,6 +689,10 @@ static constexpr int kMaxHackMapWorldActors = 128;
         entity.screenX = screenX;
         entity.screenY = screenY;
         entity.onScreen = IsScreenPointInside(screenX, screenY, sw, sh);
+        entity.headX = screenX;
+        entity.headY = screenY;
+        entity.footX = screenX;
+        entity.footY = screenY;
 
         static const float kActorHeightWorld = 2.0f;
         static const float kFootPaddingWorld = 0.08f;
@@ -730,6 +734,20 @@ static constexpr int kMaxHackMapWorldActors = 128;
 
         [entities addObject:entity];
     }
+
+    if (entities.count > 5) {
+        [entities sortUsingComparator:^NSComparisonResult(AoVEntitySnapshot *a, AoVEntitySnapshot *b) {
+            if (a.distance < b.distance) return NSOrderedAscending;
+            if (a.distance > b.distance) return NSOrderedDescending;
+            return NSOrderedSame;
+        }];
+        [entities removeObjectsInRange:NSMakeRange(5, entities.count - 5)];
+    }
+    [entities sortUsingComparator:^NSComparisonResult(AoVEntitySnapshot *a, AoVEntitySnapshot *b) {
+        if (a.actorAddress < b.actorAddress) return NSOrderedAscending;
+        if (a.actorAddress > b.actorAddress) return NSOrderedDescending;
+        return NSOrderedSame;
+    }];
 
     @synchronized(self) {
         self.viewProjectionData = [NSData dataWithBytes:viewProjection
