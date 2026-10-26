@@ -242,7 +242,37 @@ static BOOL ds_remote_set_text_on_main(RemoteCall *process, uint64_t label,
     return sent;
 }
 
-@implementation RemoteWebViewOverlay
+static const NSUInteger kMaxSpringBoardSlots = 5;
+
+typedef struct {
+    RemoteObjectRef boxView;
+    RemoteObjectRef hpBgView;
+    RemoteObjectRef hpFillView;
+    RemoteObjectRef nameLabel;
+    RemoteObjectRef lineView;
+
+    CGRect lastBoxFrame;
+    CGRect lastHpBgFrame;
+    CGRect lastHpFillFrame;
+    CGRect lastLabelFrame;
+    CGRect lastLineFrame;
+    BOOL isBoxVisible;
+    BOOL isHpVisible;
+    BOOL isNameVisible;
+    BOOL isLineVisible;
+    char lastTextBuf[64];
+} SpringBoardESPSlot;
+
+static inline BOOL IsFrameSignificantlyDifferent(CGRect a, CGRect b) {
+    return fabs(a.origin.x - b.origin.x) > 0.8 ||
+           fabs(a.origin.y - b.origin.y) > 0.8 ||
+           fabs(a.size.width - b.size.width) > 0.8 ||
+           fabs(a.size.height - b.size.height) > 0.8;
+}
+
+@implementation RemoteWebViewOverlay {
+    SpringBoardESPSlot _espSlots[kMaxSpringBoardSlots];
+}
 
 #pragma mark - Init
 
@@ -270,6 +300,7 @@ static BOOL ds_remote_set_text_on_main(RemoteCall *process, uint64_t label,
         _hasCustomFloatButtonPosition = NO;
         _floatButtonXRatio = 0;
         _floatButtonYRatio = 0;
+        memset(_espSlots, 0, sizeof(_espSlots));
     }
     return self;
 }
@@ -622,7 +653,7 @@ static BOOL ds_remote_set_text_on_main(RemoteCall *process, uint64_t label,
 }
 
 - (BOOL)setupSpringBoardOverlayWindow {
-    LOG(@"[RemoteWebViewOverlay] Setting up SpringBoard overlay window (DarkSpeed style)...");
+    LOG(@"[RemoteWebViewOverlay] Setting up SpringBoard overlay window (DarkSpeed style with 5-slot ESP)...");
 
     uint64_t workspaceClass = ds_remote_class(self.remoteCall, "SBMainWorkspace");
     uint64_t windowClass = ds_remote_class(self.remoteCall, "UIWindow");
@@ -671,16 +702,20 @@ static BOOL ds_remote_set_text_on_main(RemoteCall *process, uint64_t label,
     ds_remote_set_u64_on_main(self.remoteCall, window, "setUserInteractionEnabled:", 0);
     ds_remote_set_u64_on_main(self.remoteCall, window, "setOpaque:", 0);
 
-    // Position HUD container at top center
-    CGFloat hudW = 340.0;
-    CGFloat hudH = 30.0;
-    CGRect hudFrame = CGRectMake(MAX(0.0, (screenW - hudW) * 0.5), 10.0, hudW, hudH);
+    // Position compact HUD pill at top center
+    CGFloat hudW = 180.0;
+    CGFloat hudH = 22.0;
+    CGRect hudFrame = CGRectMake(MAX(0.0, (screenW - hudW) * 0.5), 8.0, hudW, hudH);
     ds_remote_set_rect_on_main(self.remoteCall, container, "setFrame:", hudFrame);
     ds_remote_set_rect_on_main(self.remoteCall, label, "setFrame:", CGRectMake(0, 0, hudW, hudH));
 
     uint64_t clearColor = ds_remote_get_object_on_main(self.remoteCall, colorClass, "clearColor");
     uint64_t whiteColor = ds_remote_get_object_on_main(self.remoteCall, colorClass, "whiteColor");
+    uint64_t redColor = ds_remote_get_object_on_main(self.remoteCall, colorClass, "redColor");
+    uint64_t greenColor = ds_remote_get_object_on_main(self.remoteCall, colorClass, "greenColor");
+    uint64_t blackColor = ds_remote_get_object_on_main(self.remoteCall, colorClass, "blackColor");
     uint64_t darkBgColor = ds_remote_get_object_on_main(self.remoteCall, colorClass, "darkGrayColor");
+    uint64_t redCGColor = redColor ? ds_remote_get_object_on_main(self.remoteCall, redColor, "CGColor") : 0;
 
     if (clearColor) {
         ds_perform_on_springboard_main(self.remoteCall, window, ds_remote_sel(self.remoteCall, "setBackgroundColor:"), clearColor, YES);
@@ -698,14 +733,107 @@ static BOOL ds_remote_set_text_on_main(RemoteCall *process, uint64_t label,
 
     uint64_t containerLayer = ds_remote_get_object_on_main(self.remoteCall, container, "layer");
     if (containerLayer) {
-        ds_remote_set_double_on_main(self.remoteCall, containerLayer, "setCornerRadius:", 6.0);
+        ds_remote_set_double_on_main(self.remoteCall, containerLayer, "setCornerRadius:", 5.0);
         ds_remote_set_u64_on_main(self.remoteCall, containerLayer, "setMasksToBounds:", 1);
     }
 
-    ds_remote_set_text_on_main(self.remoteCall, label, @"DarkSword AoV Overlay: Ready");
+    ds_remote_set_text_on_main(self.remoteCall, label, @"DarkLQ AoV ESP");
 
     ds_perform_on_springboard_main(self.remoteCall, container, ds_remote_sel(self.remoteCall, "addSubview:"), label, YES);
     ds_perform_on_springboard_main(self.remoteCall, window, ds_remote_sel(self.remoteCall, "addSubview:"), container, YES);
+
+    // Create 5 native ESP slots for 5 enemy heroes
+    uint64_t fontClass = ds_remote_class(self.remoteCall, "UIFont");
+    uint64_t espFont = 0;
+    if (fontClass) {
+        double fontSize = 10.0;
+        DSRemoteArg fontArg = { &fontSize, sizeof(fontSize) };
+        ds_remote_invoke_on_main_result(self.remoteCall, fontClass, ds_remote_sel(self.remoteCall, "boldSystemFontOfSize:"), &fontArg, 1, &espFont, sizeof(espFont));
+    }
+
+    for (NSUInteger i = 0; i < kMaxSpringBoardSlots; i++) {
+        SpringBoardESPSlot *slot = &_espSlots[i];
+        memset(slot, 0, sizeof(SpringBoardESPSlot));
+
+        // 1. Box view (bounding box around hero)
+        uint64_t box = remote_msg(self.remoteCall, viewClass, allocSEL, 0, 0, 0, 0);
+        if (box && ds_remote_invoke_noarg_on_main(self.remoteCall, box, "init")) {
+            ds_perform_on_springboard_main(self.remoteCall, box, ds_remote_sel(self.remoteCall, "setBackgroundColor:"), clearColor, YES);
+            ds_remote_set_u64_on_main(self.remoteCall, box, "setUserInteractionEnabled:", 0);
+            ds_remote_set_u64_on_main(self.remoteCall, box, "setHidden:", 1);
+
+            uint64_t boxLayer = ds_remote_get_object_on_main(self.remoteCall, box, "layer");
+            if (boxLayer) {
+                if (redCGColor) {
+                    ds_perform_on_springboard_main(self.remoteCall, boxLayer, ds_remote_sel(self.remoteCall, "setBorderColor:"), redCGColor, YES);
+                }
+                ds_remote_set_double_on_main(self.remoteCall, boxLayer, "setBorderWidth:", 1.5);
+                ds_remote_set_double_on_main(self.remoteCall, boxLayer, "setCornerRadius:", 2.0);
+            }
+            ds_perform_on_springboard_main(self.remoteCall, window, ds_remote_sel(self.remoteCall, "addSubview:"), box, YES);
+            slot->boxView = box;
+        }
+
+        // 2. HP background view
+        uint64_t hpBg = remote_msg(self.remoteCall, viewClass, allocSEL, 0, 0, 0, 0);
+        if (hpBg && ds_remote_invoke_noarg_on_main(self.remoteCall, hpBg, "init")) {
+            ds_perform_on_springboard_main(self.remoteCall, hpBg, ds_remote_sel(self.remoteCall, "setBackgroundColor:"), blackColor, YES);
+            ds_remote_set_double_on_main(self.remoteCall, hpBg, "setAlpha:", 0.6);
+            ds_remote_set_u64_on_main(self.remoteCall, hpBg, "setUserInteractionEnabled:", 0);
+            ds_remote_set_u64_on_main(self.remoteCall, hpBg, "setHidden:", 1);
+
+            uint64_t hpBgLayer = ds_remote_get_object_on_main(self.remoteCall, hpBg, "layer");
+            if (hpBgLayer) {
+                ds_remote_set_double_on_main(self.remoteCall, hpBgLayer, "setCornerRadius:", 1.0);
+                ds_remote_set_u64_on_main(self.remoteCall, hpBgLayer, "setMasksToBounds:", 1);
+            }
+            ds_perform_on_springboard_main(self.remoteCall, window, ds_remote_sel(self.remoteCall, "addSubview:"), hpBg, YES);
+            slot->hpBgView = hpBg;
+
+            // 3. HP fill view (added to hpBg)
+            uint64_t hpFill = remote_msg(self.remoteCall, viewClass, allocSEL, 0, 0, 0, 0);
+            if (hpFill && ds_remote_invoke_noarg_on_main(self.remoteCall, hpFill, "init")) {
+                ds_perform_on_springboard_main(self.remoteCall, hpFill, ds_remote_sel(self.remoteCall, "setBackgroundColor:"), greenColor, YES);
+                ds_remote_set_u64_on_main(self.remoteCall, hpFill, "setUserInteractionEnabled:", 0);
+                ds_perform_on_springboard_main(self.remoteCall, hpBg, ds_remote_sel(self.remoteCall, "addSubview:"), hpFill, YES);
+                slot->hpFillView = hpFill;
+            }
+        }
+
+        // 4. Hero Name & Distance label
+        uint64_t nameLbl = remote_msg(self.remoteCall, labelClass, allocSEL, 0, 0, 0, 0);
+        if (nameLbl && ds_remote_invoke_noarg_on_main(self.remoteCall, nameLbl, "init")) {
+            ds_perform_on_springboard_main(self.remoteCall, nameLbl, ds_remote_sel(self.remoteCall, "setBackgroundColor:"), blackColor, YES);
+            ds_perform_on_springboard_main(self.remoteCall, nameLbl, ds_remote_sel(self.remoteCall, "setTextColor:"), whiteColor, YES);
+            ds_remote_set_double_on_main(self.remoteCall, nameLbl, "setAlpha:", 0.7);
+            ds_remote_set_u64_on_main(self.remoteCall, nameLbl, "setTextAlignment:", (uint64_t)NSTextAlignmentCenter);
+            ds_remote_set_u64_on_main(self.remoteCall, nameLbl, "setUserInteractionEnabled:", 0);
+            ds_remote_set_u64_on_main(self.remoteCall, nameLbl, "setHidden:", 1);
+
+            uint64_t lblLayer = ds_remote_get_object_on_main(self.remoteCall, nameLbl, "layer");
+            if (lblLayer) {
+                ds_remote_set_double_on_main(self.remoteCall, lblLayer, "setCornerRadius:", 2.5);
+                ds_remote_set_u64_on_main(self.remoteCall, lblLayer, "setMasksToBounds:", 1);
+            }
+            if (espFont) {
+                ds_perform_on_springboard_main(self.remoteCall, nameLbl, ds_remote_sel(self.remoteCall, "setFont:"), espFont, YES);
+            }
+            ds_perform_on_springboard_main(self.remoteCall, window, ds_remote_sel(self.remoteCall, "addSubview:"), nameLbl, YES);
+            slot->nameLabel = nameLbl;
+        }
+
+        // 5. Line view
+        uint64_t line = remote_msg(self.remoteCall, viewClass, allocSEL, 0, 0, 0, 0);
+        if (line && ds_remote_invoke_noarg_on_main(self.remoteCall, line, "init")) {
+            ds_perform_on_springboard_main(self.remoteCall, line, ds_remote_sel(self.remoteCall, "setBackgroundColor:"), whiteColor, YES);
+            ds_remote_set_double_on_main(self.remoteCall, line, "setAlpha:", 0.7);
+            ds_remote_set_u64_on_main(self.remoteCall, line, "setUserInteractionEnabled:", 0);
+            ds_remote_set_u64_on_main(self.remoteCall, line, "setHidden:", 1);
+            ds_perform_on_springboard_main(self.remoteCall, window, ds_remote_sel(self.remoteCall, "addSubview:"), line, YES);
+            slot->lineView = line;
+        }
+    }
+
     ds_remote_set_u64_on_main(self.remoteCall, window, "setHidden:", 0);
 
     self.window = window;
@@ -714,7 +842,7 @@ static BOOL ds_remote_set_text_on_main(RemoteCall *process, uint64_t label,
     self.springBoardContainer = container;
     self.isOverlayReady = YES;
 
-    LOG(@"[RemoteWebViewOverlay] SpringBoard overlay window ready (window=0x%llx, scene=0x%llx)", window, scene);
+    LOG(@"[RemoteWebViewOverlay] SpringBoard overlay window ready with 5 ESP slots (window=0x%llx, scene=0x%llx)", window, scene);
     return YES;
 }
 
@@ -1055,25 +1183,148 @@ static BOOL ds_remote_set_text_on_main(RemoteCall *process, uint64_t label,
     }
 
     if (self.isSpringBoard) {
-        if (self.springBoardLabel) {
-            static CFAbsoluteTime lastLabelUpdate = 0;
-            CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-            if (now - lastLabelUpdate >= 0.25) { // Throttle to 4 updates per sec for SpringBoard
-                lastLabelUpdate = now;
-                NSString *hudText = nil;
-                if (targets.count == 0) {
-                    hudText = @"[AoV] Khong co dich gan";
-                } else {
-                    NSDictionary *nearest = targets.firstObject;
-                    NSString *name = nearest[@"name"] ?: @"Dich";
-                    NSNumber *hp = nearest[@"hp"] ?: @0;
-                    NSNumber *maxHp = nearest[@"maxHp"] ?: @1;
-                    NSNumber *dist = nearest[@"distance"] ?: @0;
-                    int percent = (maxHp.intValue > 0) ? (int)((hp.floatValue / maxHp.floatValue) * 100.0) : 0;
-                    hudText = [NSString stringWithFormat:@"[AoV] Dich: %lu | Gan nhat: %@ (%dm - %d%%)",
-                               (unsigned long)targets.count, name, dist.intValue, percent];
+        static CFAbsoluteTime lastESPUpdate = 0;
+        CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+        if (now - lastESPUpdate < 0.025) { // Up to 40 FPS
+            return YES;
+        }
+        lastESPUpdate = now;
+
+        NSUInteger targetCount = targets.count;
+        for (NSUInteger i = 0; i < kMaxSpringBoardSlots; i++) {
+            SpringBoardESPSlot *slot = &_espSlots[i];
+            if (i < targetCount) {
+                NSDictionary *target = targets[i];
+                BOOL onScreen = [target[@"onScreen"] boolValue];
+                BOOL visible = [target[@"visible"] boolValue];
+
+                if (onScreen && visible) {
+                    // 1. Box
+                    BOOL hasBox = [target[@"hasBox"] boolValue];
+                    CGFloat bx = [target[@"boxX"] doubleValue];
+                    CGFloat by = [target[@"boxY"] doubleValue];
+                    CGFloat bw = [target[@"boxW"] doubleValue];
+                    CGFloat bh = [target[@"boxH"] doubleValue];
+
+                    if (hasBox && bw > 5.0 && bh > 5.0 && slot->boxView) {
+                        CGRect newBox = CGRectMake(bx, by, bw, bh);
+                        if (!slot->isBoxVisible) {
+                            ds_remote_set_u64_on_main(self.remoteCall, slot->boxView, "setHidden:", 0);
+                            slot->isBoxVisible = YES;
+                        }
+                        if (IsFrameSignificantlyDifferent(slot->lastBoxFrame, newBox)) {
+                            ds_remote_set_rect_on_main(self.remoteCall, slot->boxView, "setFrame:", newBox);
+                            slot->lastBoxFrame = newBox;
+                        }
+                    } else if (slot->isBoxVisible && slot->boxView) {
+                        ds_remote_set_u64_on_main(self.remoteCall, slot->boxView, "setHidden:", 1);
+                        slot->isBoxVisible = NO;
+                    }
+
+                    // 2. Health Bar
+                    BOOL drawHealth = [target[@"drawHealth"] boolValue];
+                    int hp = [target[@"hp"] intValue];
+                    int maxHp = MAX([target[@"maxHp"] intValue], 1);
+                    if (drawHealth && hasBox && bw > 5.0 && slot->hpBgView && slot->hpFillView) {
+                        CGFloat hpRatio = OverlayClamp((CGFloat)hp / (CGFloat)maxHp, 0.0, 1.0);
+                        CGRect newHpBg = CGRectMake(bx, by - 6.0, bw, 3.5);
+                        CGRect newHpFill = CGRectMake(0, 0, bw * hpRatio, 3.5);
+
+                        if (!slot->isHpVisible) {
+                            ds_remote_set_u64_on_main(self.remoteCall, slot->hpBgView, "setHidden:", 0);
+                            slot->isHpVisible = YES;
+                        }
+                        if (IsFrameSignificantlyDifferent(slot->lastHpBgFrame, newHpBg)) {
+                            ds_remote_set_rect_on_main(self.remoteCall, slot->hpBgView, "setFrame:", newHpBg);
+                            slot->lastHpBgFrame = newHpBg;
+                        }
+                        if (IsFrameSignificantlyDifferent(slot->lastHpFillFrame, newHpFill)) {
+                            ds_remote_set_rect_on_main(self.remoteCall, slot->hpFillView, "setFrame:", newHpFill);
+                            slot->lastHpFillFrame = newHpFill;
+                        }
+                    } else if (slot->isHpVisible && slot->hpBgView) {
+                        ds_remote_set_u64_on_main(self.remoteCall, slot->hpBgView, "setHidden:", 1);
+                        slot->isHpVisible = NO;
+                    }
+
+                    // 3. Name & Distance
+                    BOOL drawName = [target[@"drawName"] boolValue];
+                    BOOL drawDist = [target[@"drawDistance"] boolValue];
+                    if ((drawName || drawDist) && hasBox && slot->nameLabel) {
+                        NSString *name = target[@"name"] ?: @"";
+                        int dist = [target[@"distance"] intValue];
+                        NSString *info = (drawName && drawDist)
+                            ? [NSString stringWithFormat:@"%@ %dm", name, dist]
+                            : (drawName ? name : [NSString stringWithFormat:@"%dm", dist]);
+
+                        CGFloat labelW = MAX(bw + 20.0, 65.0);
+                        CGRect newLabel = CGRectMake(bx + (bw - labelW) * 0.5, by - 21.0, labelW, 14.0);
+
+                        if (!slot->isNameVisible) {
+                            ds_remote_set_u64_on_main(self.remoteCall, slot->nameLabel, "setHidden:", 0);
+                            slot->isNameVisible = YES;
+                        }
+                        if (IsFrameSignificantlyDifferent(slot->lastLabelFrame, newLabel)) {
+                            ds_remote_set_rect_on_main(self.remoteCall, slot->nameLabel, "setFrame:", newLabel);
+                            slot->lastLabelFrame = newLabel;
+                        }
+                        if (strncmp(slot->lastTextBuf, info.UTF8String, sizeof(slot->lastTextBuf)) != 0) {
+                            strncpy(slot->lastTextBuf, info.UTF8String, sizeof(slot->lastTextBuf) - 1);
+                            ds_remote_set_text_on_main(self.remoteCall, slot->nameLabel, info);
+                        }
+                    } else if (slot->isNameVisible && slot->nameLabel) {
+                        ds_remote_set_u64_on_main(self.remoteCall, slot->nameLabel, "setHidden:", 1);
+                        slot->isNameVisible = NO;
+                    }
+
+                    // 4. Line
+                    BOOL drawLine = [target[@"drawLine"] boolValue];
+                    CGFloat hx = [target[@"headX"] doubleValue];
+                    CGFloat hy = [target[@"headY"] doubleValue];
+                    if (drawLine && hy > 38.0 && slot->lineView) {
+                        CGRect newLine = CGRectMake(hx - 0.6, 38.0, 1.2, hy - 38.0);
+                        if (!slot->isLineVisible) {
+                            ds_remote_set_u64_on_main(self.remoteCall, slot->lineView, "setHidden:", 0);
+                            slot->isLineVisible = YES;
+                        }
+                        if (IsFrameSignificantlyDifferent(slot->lastLineFrame, newLine)) {
+                            ds_remote_set_rect_on_main(self.remoteCall, slot->lineView, "setFrame:", newLine);
+                            slot->lastLineFrame = newLine;
+                        }
+                    } else if (slot->isLineVisible && slot->lineView) {
+                        ds_remote_set_u64_on_main(self.remoteCall, slot->lineView, "setHidden:", 1);
+                        slot->isLineVisible = NO;
+                    }
+                    continue;
                 }
-                ds_remote_set_text_on_main(self.remoteCall, self.springBoardLabel, hudText);
+            }
+
+            // Target not on screen or slot index >= targetCount -> Hide all
+            if (slot->isBoxVisible && slot->boxView) {
+                ds_remote_set_u64_on_main(self.remoteCall, slot->boxView, "setHidden:", 1);
+                slot->isBoxVisible = NO;
+            }
+            if (slot->isHpVisible && slot->hpBgView) {
+                ds_remote_set_u64_on_main(self.remoteCall, slot->hpBgView, "setHidden:", 1);
+                slot->isHpVisible = NO;
+            }
+            if (slot->isNameVisible && slot->nameLabel) {
+                ds_remote_set_u64_on_main(self.remoteCall, slot->nameLabel, "setHidden:", 1);
+                slot->isNameVisible = NO;
+            }
+            if (slot->isLineVisible && slot->lineView) {
+                ds_remote_set_u64_on_main(self.remoteCall, slot->lineView, "setHidden:", 1);
+                slot->isLineVisible = NO;
+            }
+        }
+
+        // Top HUD badge update (throttled to 2 FPS)
+        if (self.springBoardLabel) {
+            static CFAbsoluteTime lastBadgeUpdate = 0;
+            if (now - lastBadgeUpdate >= 0.5) {
+                lastBadgeUpdate = now;
+                NSString *badge = [NSString stringWithFormat:@"AoV ESP [Dich: %lu]", (unsigned long)targetCount];
+                ds_remote_set_text_on_main(self.remoteCall, self.springBoardLabel, badge);
             }
         }
         return YES;
@@ -1162,8 +1413,33 @@ static BOOL ds_remote_set_text_on_main(RemoteCall *process, uint64_t label,
         return NO;
 
     if (self.isSpringBoard) {
+        for (NSUInteger i = 0; i < kMaxSpringBoardSlots; i++) {
+            SpringBoardESPSlot *slot = &_espSlots[i];
+            if (slot->isBoxVisible && slot->boxView) {
+                ds_remote_set_u64_on_main(self.remoteCall, slot->boxView, "setHidden:", 1);
+                slot->isBoxVisible = NO;
+            }
+            if (slot->isHpVisible && slot->hpBgView) {
+                ds_remote_set_u64_on_main(self.remoteCall, slot->hpBgView, "setHidden:", 1);
+                slot->isHpVisible = NO;
+            }
+            if (slot->isNameVisible && slot->nameLabel) {
+                ds_remote_set_u64_on_main(self.remoteCall, slot->nameLabel, "setHidden:", 1);
+                slot->isNameVisible = NO;
+            }
+            if (slot->isLineVisible && slot->lineView) {
+                ds_remote_set_u64_on_main(self.remoteCall, slot->lineView, "setHidden:", 1);
+                slot->isLineVisible = NO;
+            }
+            slot->lastBoxFrame = CGRectZero;
+            slot->lastHpBgFrame = CGRectZero;
+            slot->lastHpFillFrame = CGRectZero;
+            slot->lastLabelFrame = CGRectZero;
+            slot->lastLineFrame = CGRectZero;
+            slot->lastTextBuf[0] = '\0';
+        }
         if (self.springBoardLabel) {
-            ds_remote_set_text_on_main(self.remoteCall, self.springBoardLabel, @"[AoV] Dang quet...");
+            ds_remote_set_text_on_main(self.remoteCall, self.springBoardLabel, @"AoV ESP [0]");
         }
         return YES;
     }
@@ -1186,6 +1462,17 @@ static BOOL ds_remote_set_text_on_main(RemoteCall *process, uint64_t label,
         self.isSpringBoard ? "SpringBoard" : "Internal");
 
     if (self.isSpringBoard) {
+        for (NSUInteger i = 0; i < kMaxSpringBoardSlots; i++) {
+            SpringBoardESPSlot *slot = &_espSlots[i];
+            uint64_t removeSEL = ds_remote_sel(self.remoteCall, "removeFromSuperview");
+            if (removeSEL) {
+                if (slot->boxView) ds_perform_on_springboard_main(self.remoteCall, slot->boxView, removeSEL, 0, YES);
+                if (slot->hpBgView) ds_perform_on_springboard_main(self.remoteCall, slot->hpBgView, removeSEL, 0, YES);
+                if (slot->nameLabel) ds_perform_on_springboard_main(self.remoteCall, slot->nameLabel, removeSEL, 0, YES);
+                if (slot->lineView) ds_perform_on_springboard_main(self.remoteCall, slot->lineView, removeSEL, 0, YES);
+            }
+            memset(slot, 0, sizeof(SpringBoardESPSlot));
+        }
         if (self.springBoardContainer) {
             uint64_t removeSEL = ds_remote_sel(self.remoteCall, "removeFromSuperview");
             if (removeSEL) {
