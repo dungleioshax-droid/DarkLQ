@@ -477,23 +477,54 @@ NS_ASSUME_NONNULL_BEGIN
     }
 
     if (staticFields == 0) {
-        char firstName[40] = {0};
-        if (candidateCount > 0) {
-            uintptr_t namePtr = ReadMemorySafe<uintptr_t>(
-                remoteCall, candidates[0] + kIl2CppClass_Name);
-            if (validOffsetPtr(namePtr)) {
-                [remoteCall remoteRead:namePtr
-                                     to:firstName
-                                   size:sizeof(firstName) - 1];
-                firstName[sizeof(firstName) - 1] = '\0';
+        // Recovery: find the literal "GameFacade" class name in the image and
+        // match it against the candidates. This pins both the klass pointer
+        // and the real name offset, correcting a stale dump offset for every
+        // class-name based check in the pipeline.
+        uintptr_t nameAddr =
+            FindGameFacadeNameInImage(remoteCall, self.binaryBase);
+        if (validOffsetPtr(nameAddr)) {
+            for (int i = 0; i < candidateCount && staticFields == 0; ++i) {
+                uint64_t nameOffset =
+                    FindNameOffsetByString(remoteCall, candidates[i], nameAddr);
+                if (nameOffset == 0)
+                    continue;
+
+                gFreeFireKlassNameOffset = nameOffset;
+                staticFields =
+                    FindStaticFieldsBlockInKlass(remoteCall, candidates[i]);
             }
         }
-        [self
-            reportStatus:
-                [NSString stringWithFormat:@"static fields unverified: "
-                                           @"cands=%d firstName='%s'",
-                                           candidateCount, firstName]];
-        return 0;
+
+        if (staticFields == 0) {
+            char probe[240] = {0};
+            size_t used = 0;
+            for (int i = 0;
+                 i < candidateCount && used + 48 < sizeof(probe); ++i) {
+                char at8[24] = {0};
+                char at16[24] = {0};
+                ReadStructPointerString(remoteCall, candidates[i], 0x08, at8,
+                                        sizeof(at8));
+                ReadStructPointerString(remoteCall, candidates[i], 0x10,
+                                        at16, sizeof(at16));
+                if (at8[0] == '\0' && at16[0] == '\0')
+                    continue;
+                int written = snprintf(probe + used, sizeof(probe) - used,
+                                       "%d:'%s'|'%s' ", i, at8, at16);
+                if (written <= 0)
+                    break;
+                used += (size_t)written;
+            }
+
+            [self
+                reportStatus:
+                    [NSString
+                        stringWithFormat:@"static fields unverified: "
+                                         @"cands=%d img=0x%lx %s",
+                                         candidateCount,
+                                         (unsigned long)nameAddr, probe]];
+            return 0;
+        }
     }
 
     // MatchGame lives in one of the dump slots (0x08 / 0x00); fall back to
@@ -906,7 +937,7 @@ NS_ASSUME_NONNULL_BEGIN
             continue;
 
         uintptr_t namePtr =
-            ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Name);
+            ReadMemorySafe<uintptr_t>(remoteCall, klass + gFreeFireKlassNameOffset);
         if (!validOffsetPtr(namePtr))
             continue;
 

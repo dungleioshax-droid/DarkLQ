@@ -14,6 +14,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -298,6 +300,16 @@ static NSString *ReadIl2CppString(RemoteCall *remoteCall, uintptr_t stringAddr) 
 
 // MARK: - Il2Cpp Object Introspection
 
+// Which Il2CppClass offset holds the class name. The dump says 0x10, but a
+// mismatch silently breaks every class-name based check, so the resolver
+// corrects this at runtime once it matches a known class name from the image.
+static uint64_t gFreeFireKlassNameOffset = kIl2CppClass_Name;
+
+// Lazily scanned location of the "GameFacade" string inside the image, and
+// whether the scan already ran (it streams the whole mapped binary once).
+static uintptr_t gGameFacadeNameAddress = 0;
+static bool gGameFacadeNameScanned = false;
+
 static bool ReadIl2CppClassName(RemoteCall *remoteCall, uintptr_t object,
                                 char *out, size_t capacity) {
     if (!remoteCall || !out || capacity == 0)
@@ -312,7 +324,7 @@ static bool ReadIl2CppClassName(RemoteCall *remoteCall, uintptr_t object,
         return false;
 
     uintptr_t namePtr =
-        ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Name);
+        ReadMemorySafe<uintptr_t>(remoteCall, klass + gFreeFireKlassNameOffset);
     if (!validOffsetPtr(namePtr))
         return false;
 
@@ -338,8 +350,8 @@ static bool IsSubclassOf(RemoteCall *remoteCall, uintptr_t object,
 
     uintptr_t klass = ReadMemorySafe<uintptr_t>(remoteCall, object);
     for (int depth = 0; depth < 10 && validOffsetPtr(klass); ++depth) {
-        uintptr_t namePtr =
-            ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Name);
+        uintptr_t namePtr = ReadMemorySafe<uintptr_t>(
+            remoteCall, klass + gFreeFireKlassNameOffset);
         if (validOffsetPtr(namePtr)) {
             char buffer[64] = {0};
             if ([remoteCall remoteRead:namePtr to:buffer size:sizeof(buffer) - 1]) {
@@ -513,7 +525,7 @@ static bool Il2CppKlassNameIs(RemoteCall *remoteCall, uintptr_t klass,
         return false;
 
     uintptr_t namePtr =
-        ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Name);
+        ReadMemorySafe<uintptr_t>(remoteCall, klass + gFreeFireKlassNameOffset);
     if (!validOffsetPtr(namePtr))
         return false;
 
@@ -529,13 +541,12 @@ static bool LooksLikeGameFacadeStaticBlock(RemoteCall *remoteCall,
     if (!validOffsetPtr(block))
         return false;
 
-    const uint64_t slots[] = {
-        kGameFacadeStatic_CurrentGame,
-        kGameFacadeStatic_CurrentMatchGame
-    };
-    for (int i = 0; i < 2; ++i) {
+    // The first slots of GameFacade's static fields hold game objects
+    // (CurrentGame / CurrentMatchGame in the dump layout); scan the early
+    // slots so a shifted layout still verifies.
+    for (uint64_t slot = 0x0; slot <= 0x38; slot += sizeof(uintptr_t)) {
         uintptr_t value =
-            ReadMemorySafe<uintptr_t>(remoteCall, block + slots[i]);
+            ReadMemorySafe<uintptr_t>(remoteCall, block + slot);
         if (Il2CppClassNameContains(remoteCall, value, "Game"))
             return true;
     }
@@ -556,6 +567,174 @@ static uintptr_t FindStaticFieldsBlockInKlass(RemoteCall *remoteCall,
             return block;
     }
     return 0;
+}
+
+// Reads the C string pointed to by a struct field — a probe helper: a class
+// name field should yield a printable ASCII string.
+static void ReadStructPointerString(RemoteCall *remoteCall, uintptr_t structure,
+                                    uint64_t fieldOffset, char *out,
+                                    size_t capacity) {
+    if (!out || capacity == 0)
+        return;
+    out[0] = '\0';
+    if (!remoteCall || !validOffsetPtr(structure))
+        return;
+
+    uintptr_t ptr =
+        ReadMemorySafe<uintptr_t>(remoteCall, structure + fieldOffset);
+    if (!validOffsetPtr(ptr))
+        return;
+
+    char buffer[48] = {0};
+    if (![remoteCall remoteRead:ptr to:buffer size:sizeof(buffer) - 1])
+        return;
+    buffer[sizeof(buffer) - 1] = '\0';
+
+    size_t length = 0;
+    while (length < sizeof(buffer) && buffer[length] != '\0') {
+        unsigned char c = (unsigned char)buffer[length];
+        if (c < 0x20 || c > 0x7E)
+            return;
+        ++length;
+    }
+    if (length == 0)
+        return;
+
+    size_t copyLength = length < capacity - 1 ? length : capacity - 1;
+    memcpy(out, buffer, copyLength);
+    out[copyLength] = '\0';
+}
+
+// Returns the offset inside `structure` whose value equals `stringAddr` —
+// i.e. which field holds the given class name pointer — or 0.
+static uint64_t FindNameOffsetByString(RemoteCall *remoteCall,
+                                       uintptr_t structure,
+                                       uintptr_t stringAddr) {
+    if (!remoteCall || !validOffsetPtr(structure) ||
+        !validOffsetPtr(stringAddr))
+        return 0;
+
+    for (uint64_t offset = 0x0; offset <= 0x40;
+         offset += sizeof(uintptr_t)) {
+        uintptr_t value =
+            ReadMemorySafe<uintptr_t>(remoteCall, structure + offset);
+        if (value == stringAddr)
+            return offset;
+    }
+    return 0;
+}
+
+// Streams the mapped image looking for the literal "GameFacade" class name
+// and returns its address (cached; runs at most once per process).
+static uintptr_t FindGameFacadeNameInImage(RemoteCall *remoteCall,
+                                           uintptr_t base) {
+    if (gGameFacadeNameScanned)
+        return gGameFacadeNameAddress;
+    gGameFacadeNameScanned = true;
+    gGameFacadeNameAddress = 0;
+
+    if (!remoteCall || !validOffsetPtr(base))
+        return 0;
+
+    static const char kNeedle[] = "GameFacade";
+    static const size_t kNeedleLength = 10;
+
+    // mach_header_64: magic@0, ncmds@16, sizeofcmds@20
+    uint32_t header[8] = {0};
+    if (![remoteCall remoteRead:base to:header size:sizeof(header)])
+        return 0;
+    if (header[0] != 0xFEEDFACFu)
+        return 0;
+    uint32_t ncmds = header[4];
+    if (ncmds == 0 || ncmds > 256)
+        return 0;
+
+    struct ImageRange {
+        uint64_t vmaddr;
+        uint64_t vmsize;
+    };
+    ImageRange ranges[48];
+    int rangeCount = 0;
+    uint64_t preferredBase = 0;
+    bool havePreferred = false;
+
+    uintptr_t lcAddr = base + 32;  // sizeof(mach_header_64)
+    for (uint32_t i = 0; i < ncmds; ++i) {
+        uint32_t lc[2] = {0};
+        if (![remoteCall remoteRead:lcAddr to:lc size:sizeof(lc)])
+            break;
+        if (lc[1] < 8)
+            break;
+        if (lc[0] == 0x19 /* LC_SEGMENT_64 */ && lc[1] >= 72) {
+            // cmd@0, cmdsize@4, segname@8..23, vmaddr@24, vmsize@32, fileoff@40
+            uint64_t raw[6] = {0};
+            if (![remoteCall remoteRead:lcAddr to:raw size:sizeof(raw)])
+                break;
+            uint64_t vmaddr = raw[3];
+            uint64_t vmsize = raw[4];
+            uint64_t fileoff = raw[5];
+            if (fileoff == 0 && vmsize > 0 && !havePreferred) {
+                preferredBase = vmaddr;
+                havePreferred = true;
+            }
+            if (vmsize > 0 && rangeCount < 48) {
+                ranges[rangeCount].vmaddr = vmaddr;
+                ranges[rangeCount].vmsize = vmsize;
+                ++rangeCount;
+            }
+        }
+        lcAddr += lc[1];
+    }
+
+    if (!havePreferred || rangeCount == 0)
+        return 0;
+
+    uintptr_t slide = base - (uintptr_t)preferredBase;
+
+    static const size_t kChunk = 0x8000;  // 32 KB reads keep krw calls small
+    static const size_t kOverlap = 32;
+    static const uint64_t kScanCap = 0x40000000ULL;  // 1 GB hard cap
+    char *buffer = (char *)malloc(kChunk + kOverlap);
+    if (!buffer)
+        return 0;
+
+    uint64_t scanned = 0;
+    for (int r = 0; r < rangeCount && gGameFacadeNameAddress == 0; ++r) {
+        uintptr_t pos = (uintptr_t)ranges[r].vmaddr + slide;
+        uintptr_t end = pos + (uintptr_t)ranges[r].vmsize;
+        size_t carry = 0;
+
+        while (pos < end && gGameFacadeNameAddress == 0 &&
+               scanned < kScanCap) {
+            size_t want = kChunk;
+            if (pos + want > end)
+                want = (size_t)(end - pos);
+
+            if (![remoteCall remoteRead:pos
+                                      to:buffer + carry
+                                    size:want]) {
+                pos += want;
+                carry = 0;
+                continue;
+            }
+
+            size_t total = carry + want;
+            for (size_t i = 0; i + kNeedleLength <= total; ++i) {
+                if (memcmp(buffer + i, kNeedle, kNeedleLength) == 0) {
+                    gGameFacadeNameAddress = (pos - carry) + i;
+                    break;
+                }
+            }
+
+            scanned += want;
+            pos += want;
+            carry = total > kOverlap ? kOverlap : total;
+            memmove(buffer, buffer + total - carry, carry);
+        }
+    }
+
+    free(buffer);
+    return gGameFacadeNameAddress;
 }
 
 // MARK: - Dynamic ARM64 Static Fields Resolution
