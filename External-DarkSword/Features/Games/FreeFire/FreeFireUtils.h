@@ -455,13 +455,13 @@ static bool LooksLikePlayerDictionary(RemoteCall *remoteCall, uintptr_t dict) {
     return false;
 }
 
-static uint64_t FindIl2CppFieldMatching(
-    RemoteCall *remoteCall, uintptr_t object, uint64_t endOffset,
-    bool (*predicate)(RemoteCall *, uintptr_t)) {
+static uint64_t FindIl2CppFieldMatchingFrom(
+    RemoteCall *remoteCall, uintptr_t object, uint64_t startOffset,
+    uint64_t endOffset, bool (*predicate)(RemoteCall *, uintptr_t)) {
     if (!remoteCall || !predicate || !validOffsetPtr(object))
         return 0;
 
-    for (uint64_t offset = 0x10;
+    for (uint64_t offset = startOffset;
          offset + sizeof(uintptr_t) <= endOffset;
          offset += sizeof(uintptr_t)) {
         uintptr_t value =
@@ -475,10 +475,98 @@ static uint64_t FindIl2CppFieldMatching(
     return 0;
 }
 
+// Managed objects start their fields at 0x10 (klass + monitor headers),
+// while a static fields block starts at 0x00.
+static uint64_t FindIl2CppFieldMatching(
+    RemoteCall *remoteCall, uintptr_t object, uint64_t endOffset,
+    bool (*predicate)(RemoteCall *, uintptr_t)) {
+    return FindIl2CppFieldMatchingFrom(remoteCall, object, 0x10, endOffset,
+                                       predicate);
+}
+
+// MARK: - GameFacade Static Fields Verification
+//
+// Dump RVAs and the static_fields offset both drift between Free Fire builds,
+// so a pointer only counts as "GameFacade's static fields" when its contents
+// prove it: either it is GameFacade's Il2CppClass (found by class name) and
+// the block lives inside it, or it IS the block (a dump slot holds a game
+// object). Unverifiable pointers are discarded instead of being used.
+
+static const int kMaxStaticCandidates = 24;
+
+static void PushCandidate(uintptr_t *values, int *count, int capacity,
+                          uintptr_t value) {
+    if (!values || !count || !validOffsetPtr(value))
+        return;
+    if (*count >= capacity)
+        return;
+    for (int i = 0; i < *count; ++i) {
+        if (values[i] == value)
+            return;
+    }
+    values[(*count)++] = value;
+}
+
+static bool Il2CppKlassNameIs(RemoteCall *remoteCall, uintptr_t klass,
+                              const char *want) {
+    if (!want || !validOffsetPtr(klass))
+        return false;
+
+    uintptr_t namePtr =
+        ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Name);
+    if (!validOffsetPtr(namePtr))
+        return false;
+
+    char buffer[64] = {0};
+    if (![remoteCall remoteRead:namePtr to:buffer size:sizeof(buffer) - 1])
+        return false;
+    buffer[sizeof(buffer) - 1] = '\0';
+    return strcmp(buffer, want) == 0;
+}
+
+static bool LooksLikeGameFacadeStaticBlock(RemoteCall *remoteCall,
+                                           uintptr_t block) {
+    if (!validOffsetPtr(block))
+        return false;
+
+    const uint64_t slots[] = {
+        kGameFacadeStatic_CurrentGame,
+        kGameFacadeStatic_CurrentMatchGame
+    };
+    for (int i = 0; i < 2; ++i) {
+        uintptr_t value =
+            ReadMemorySafe<uintptr_t>(remoteCall, block + slots[i]);
+        if (Il2CppClassNameContains(remoteCall, value, "Game"))
+            return true;
+    }
+    return false;
+}
+
+// The static_fields pointer sits at a build-dependent offset inside
+// Il2CppClass, so scan instead of trusting a single number.
+static uintptr_t FindStaticFieldsBlockInKlass(RemoteCall *remoteCall,
+                                              uintptr_t klass) {
+    if (!validOffsetPtr(klass))
+        return 0;
+
+    for (uint64_t offset = 0x20; offset <= 0x280;
+         offset += sizeof(uintptr_t)) {
+        uintptr_t block = ReadMemorySafe<uintptr_t>(remoteCall, klass + offset);
+        if (LooksLikeGameFacadeStaticBlock(remoteCall, block))
+            return block;
+    }
+    return 0;
+}
+
 // MARK: - Dynamic ARM64 Static Fields Resolution
 
-static uintptr_t DecodeArm64AdrLdr(RemoteCall *remoteCall, uintptr_t funcAddr) {
-    if (!validOffsetPtr(funcAddr) || !remoteCall)
+// Collects every value reachable through an ADRP + LDR/ADD pair in the first
+// 32 instructions. The first pair of a function is NOT necessarily the static
+// fields accessor, so callers verify each candidate instead of trusting one.
+static int CollectArm64StaticCandidates(RemoteCall *remoteCall,
+                                        uintptr_t funcAddr, uintptr_t *out,
+                                        int maxOut) {
+    if (!remoteCall || !validOffsetPtr(funcAddr) || !out || maxOut <= 0)
         return 0;
 
     uint32_t insns[32] = {0};
@@ -486,6 +574,7 @@ static uintptr_t DecodeArm64AdrLdr(RemoteCall *remoteCall, uintptr_t funcAddr) {
         return 0;
 
     uintptr_t adrpTargets[32] = {0};
+    int found = 0;
 
     for (int i = 0; i < 32; ++i) {
         uint32_t insn = insns[i];
@@ -511,9 +600,8 @@ static uintptr_t DecodeArm64AdrLdr(RemoteCall *remoteCall, uintptr_t funcAddr) {
             if (adrpTargets[rn] != 0) {
                 uint32_t imm12 = ((insn >> 10) & 0xFFF) << 3;
                 uintptr_t ptrAddr = adrpTargets[rn] + imm12;
-                uintptr_t resolved = ReadMemorySafe<uintptr_t>(remoteCall, ptrAddr);
-                if (validOffsetPtr(resolved))
-                    return resolved;
+                PushCandidate(out, &found, maxOut,
+                              ReadMemorySafe<uintptr_t>(remoteCall, ptrAddr));
             }
         }
 
@@ -524,16 +612,16 @@ static uintptr_t DecodeArm64AdrLdr(RemoteCall *remoteCall, uintptr_t funcAddr) {
                 uint32_t imm12 = (insn >> 10) & 0xFFF;
                 uintptr_t targetAddr = adrpTargets[rn] + imm12;
                 if (validOffsetPtr(targetAddr)) {
-                    uintptr_t deref = ReadMemorySafe<uintptr_t>(remoteCall, targetAddr);
-                    if (validOffsetPtr(deref))
-                        return deref;
-                    return targetAddr;
+                    PushCandidate(out, &found, maxOut,
+                                  ReadMemorySafe<uintptr_t>(remoteCall,
+                                                            targetAddr));
+                    PushCandidate(out, &found, maxOut, targetAddr);
                 }
             }
         }
     }
 
-    return 0;
+    return found;
 }
 
 #endif /* FreeFireUtils_h */

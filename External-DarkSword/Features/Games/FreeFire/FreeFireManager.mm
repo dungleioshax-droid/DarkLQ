@@ -56,8 +56,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, copy) NSArray<FreeFireEntitySnapshot *> *entitySnapshots;
 @property(nonatomic, readwrite) BOOL hasValidFrame;
 @property(nonatomic, assign) uintptr_t staticFieldsAddress;
-@property(nonatomic, assign) uintptr_t unverifiedStaticFields;
 @property(nonatomic, assign) NSTimeInterval lastStaticResolveAttempt;
+@property(nonatomic, copy) NSString *binaryBaseSource;
 @property(nonatomic, strong) RemoteWebViewOverlay *remoteWebViewOverlay;
 @property(nonatomic, assign) NSTimeInterval lastDiscoveryAttempt;
 
@@ -126,9 +126,11 @@ NS_ASSUME_NONNULL_BEGIN
                           [self
                               reportDiagnostics:
                                   [NSString
-                                      stringWithFormat:@"base=0x%lx",
+                                      stringWithFormat:@"base=0x%lx (%@)",
                                                        (unsigned long)self
-                                                           .binaryBase]];
+                                                           .binaryBase,
+                                                       self.binaryBaseSource ?:
+                                                           @"unknown"]];
                       } else {
                           baseCooldown = 50; // Throttle retry to ~0.5s instead of 100 FPS
                           [self reportStatus:@"stage 0/6: binary base not resolved (retrying)"];
@@ -181,7 +183,7 @@ NS_ASSUME_NONNULL_BEGIN
         self.viewProjectionData = [NSData data];
         self.hasValidFrame = NO;
         self.staticFieldsAddress = 0;
-        self.unverifiedStaticFields = 0;
+        self.lastStaticResolveAttempt = 0;
     }
 }
 
@@ -372,12 +374,14 @@ NS_ASSUME_NONNULL_BEGIN
             continue;
 
         if (strstr(pathBuf, "UnityFramework")) {
+            self.binaryBaseSource = @"UnityFramework";
             return imageLoadAddress;
         }
 
         if ((strcasestr(pathBuf, "freefire") || strstr(pathBuf, "FreeFire")) &&
             freeFireMainBinary == 0) {
             freeFireMainBinary = imageLoadAddress;
+            self.binaryBaseSource = [NSString stringWithUTF8String:pathBuf];
         }
     }
 
@@ -402,156 +406,135 @@ NS_ASSUME_NONNULL_BEGIN
         return self.staticFieldsAddress;
     }
 
-    // A block chosen without verification is re-resolved at most once per
-    // second, so a lobby-time guess can be replaced as soon as the match
-    // state (and a verifiable MatchGame reference) appears.
-    if (self.unverifiedStaticFields != 0) {
-        NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-        if (now - self.lastStaticResolveAttempt < 1.0) {
-            return self.unverifiedStaticFields;
-        }
+    // Failed attempts retry at most once per second; reportStage de-dups the
+    // stage line so the log stays quiet between retries.
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (self.lastStaticResolveAttempt != 0 &&
+        now - self.lastStaticResolveAttempt < 1.0) {
+        return 0;
     }
-    self.lastStaticResolveAttempt = [NSDate timeIntervalSinceReferenceDate];
+    self.lastStaticResolveAttempt = now;
 
-    uintptr_t candidate = 0;
+    uintptr_t candidates[kMaxStaticCandidates];
+    int candidateCount = 0;
 
-    // Strategy 1: Resolve via Il2Cpp MethodInfo (like AoV)
+    // Strategy 1: Il2Cpp MethodInfo RVAs from the dump. They go stale after a
+    // game update (the values can be completely bogus), so the results are
+    // only candidates until verified.
     const uint64_t methodInfoOffsets[] = {
         kMethodInfo_GameFacade_CCtor,
         kMethodInfo_GameFacade_CurrentLocalPlayer,
         kMethodInfo_GameFacade_SetCurrentGame
     };
 
-    for (int i = 0; i < 3 && !validOffsetPtr(candidate); ++i) {
+    for (int i = 0; i < 3; ++i) {
         uintptr_t methodInfo = self.binaryBase + methodInfoOffsets[i];
-        uintptr_t klass = ReadMemorySafe<uintptr_t>(remoteCall, methodInfo + kMethodInfo_Klass);
-        if (validOffsetPtr(klass)) {
-            uintptr_t sf = ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_StaticFields);
-            if (validOffsetPtr(sf)) {
-                candidate = sf;
-            } else {
-                candidate = klass;
-            }
+        uintptr_t klass = ReadMemorySafe<uintptr_t>(
+            remoteCall, methodInfo + kMethodInfo_Klass);
+        if (validOffsetPtr(klass))
+            PushCandidate(candidates, &candidateCount, kMaxStaticCandidates,
+                          klass);
+    }
+
+    // Strategy 2: collect EVERY ADRP-derived pointer of the accessors instead
+    // of trusting the first pair the decoder happens to hit.
+    const uint64_t accessorRVAs[] = {
+        kGameFacade_CCtor,
+        kGameFacade_CurrentLocalPlayer,
+        kGameFacade_SetCurrentGame
+    };
+
+    for (int i = 0; i < 3; ++i) {
+        uintptr_t found[8] = {0};
+        int foundCount = CollectArm64StaticCandidates(
+            remoteCall, self.binaryBase + accessorRVAs[i], found, 8);
+        for (int j = 0; j < foundCount; ++j) {
+            PushCandidate(candidates, &candidateCount, kMaxStaticCandidates,
+                          found[j]);
         }
     }
 
-    // Strategy 2: Decode from ARM64 instructions if Strategy 1 did not find it
-    if (!validOffsetPtr(candidate)) {
-        // Attempt 2.1: Decode from GameFacade..cctor (0x5944B44)
-        uintptr_t cctorAddr = self.binaryBase + kGameFacade_CCtor;
-        candidate = DecodeArm64AdrLdr(remoteCall, cctorAddr);
-
-        // Attempt 2.2: Decode from CurrentLocalPlayer (0x591BD2C)
-        if (!validOffsetPtr(candidate)) {
-            uintptr_t clpAddr = self.binaryBase + kGameFacade_CurrentLocalPlayer;
-            candidate = DecodeArm64AdrLdr(remoteCall, clpAddr);
-        }
-
-        // Attempt 2.3: Decode from SetCurrentGame (0x5918864)
-        if (!validOffsetPtr(candidate)) {
-            uintptr_t scgAddr = self.binaryBase + kGameFacade_SetCurrentGame;
-            candidate = DecodeArm64AdrLdr(remoteCall, scgAddr);
-        }
-    }
-
-    if (!validOffsetPtr(candidate)) {
+    if (candidateCount == 0) {
+        [self reportStatus:@"static fields unverified: no candidates decoded"];
         return 0;
     }
-
-    // In IL2CPP 64-bit, candidate can be Il2CppClass* (klass) or the static
-    // fields block itself. If it is a klass, static_fields is at klass + 0xB8.
-    // Prefer whichever block actually holds a verified MatchGame reference.
-    uintptr_t fromKlass =
-        ReadMemorySafe<uintptr_t>(remoteCall, candidate + kIl2CppClass_StaticFields);
 
     uintptr_t staticFields = 0;
     uint64_t matchGameOffset = 0;
     uintptr_t matchGame = 0;
-    BOOL verified = NO;
 
-    for (int option = 0; option < 2 && staticFields == 0; ++option) {
-        uintptr_t block = option == 0 ? fromKlass : candidate;
-        if (!validOffsetPtr(block))
-            continue;
+    for (int i = 0; i < candidateCount && staticFields == 0; ++i) {
+        uintptr_t candidate = candidates[i];
 
-        // Slots 0x00/0x08 (CurrentGame / CurrentMatchGame) are skipped by
-        // the generic scanner, which starts at 0x10 to skip object headers,
-        // yet they are exactly where the dump says MatchGame lives.
-        const uint64_t dumpSlots[] = {
-            kGameFacadeStatic_CurrentMatchGame,
-            kGameFacadeStatic_CurrentGame
-        };
-        for (int s = 0; s < 2 && staticFields == 0; ++s) {
-            uintptr_t value =
-                ReadMemorySafe<uintptr_t>(remoteCall, block + dumpSlots[s]);
-            if (!FieldHoldsMatchGame(remoteCall, value))
-                continue;
-
-            staticFields = block;
-            matchGameOffset = dumpSlots[s];
-            matchGame = value;
-            verified = YES;
+        if (Il2CppKlassNameIs(remoteCall, candidate, "GameFacade")) {
+            staticFields =
+                FindStaticFieldsBlockInKlass(remoteCall, candidate);
         }
-        if (staticFields != 0)
-            continue;
-
-        uint64_t discovered = FindIl2CppFieldMatching(
-            remoteCall, block, 0x100, FieldHoldsMatchGame);
-        if (discovered == 0)
-            continue;
-
-        staticFields = block;
-        matchGameOffset = discovered;
-        matchGame = ReadMemorySafe<uintptr_t>(remoteCall, block + discovered);
-        verified = YES;
+        if (staticFields == 0 &&
+            LooksLikeGameFacadeStaticBlock(remoteCall, candidate)) {
+            staticFields = candidate;
+        }
     }
 
     if (staticFields == 0) {
-        // Lobby (no MatchGame yet) or renamed classes: pick the block whose
-        // CurrentGame slot really holds a game object, otherwise keep the
-        // dump layout.
-        uintptr_t blocks[2] = {
-            validOffsetPtr(fromKlass) ? fromKlass : 0,
-            validOffsetPtr(candidate) ? candidate : 0
-        };
-        uintptr_t chosen = 0;
-        for (int b = 0; b < 2 && chosen == 0; ++b) {
-            if (blocks[b] == 0)
-                continue;
-            uintptr_t currentGame = ReadMemorySafe<uintptr_t>(
-                remoteCall, blocks[b] + kGameFacadeStatic_CurrentGame);
-            if (Il2CppClassNameContains(remoteCall, currentGame, "Game"))
-                chosen = blocks[b];
+        char firstName[40] = {0};
+        if (candidateCount > 0) {
+            uintptr_t namePtr = ReadMemorySafe<uintptr_t>(
+                remoteCall, candidates[0] + kIl2CppClass_Name);
+            if (validOffsetPtr(namePtr)) {
+                [remoteCall remoteRead:namePtr
+                                     to:firstName
+                                   size:sizeof(firstName) - 1];
+                firstName[sizeof(firstName) - 1] = '\0';
+            }
         }
-
-        staticFields = chosen != 0
-                           ? chosen
-                           : (validOffsetPtr(fromKlass) ? fromKlass : candidate);
-        verified = (chosen != 0);
-        matchGameOffset = gFreeFireMatchGameFieldOffset != 0
-                              ? gFreeFireMatchGameFieldOffset
-                              : kGameFacadeStatic_CurrentMatchGame;
-        matchGame = validOffsetPtr(staticFields)
-                        ? ReadMemorySafe<uintptr_t>(
-                              remoteCall, staticFields + matchGameOffset)
-                        : 0;
+        [self
+            reportStatus:
+                [NSString stringWithFormat:@"static fields unverified: "
+                                           @"cands=%d firstName='%s'",
+                                           candidateCount, firstName]];
+        return 0;
     }
 
-    if (!validOffsetPtr(staticFields))
-        return 0;
+    // MatchGame lives in one of the dump slots (0x08 / 0x00); fall back to
+    // scanning the whole block, which starts at 0x00 (no object header).
+    matchGameOffset = gFreeFireMatchGameFieldOffset != 0
+                          ? gFreeFireMatchGameFieldOffset
+                          : kGameFacadeStatic_CurrentMatchGame;
+    const uint64_t dumpSlots[] = {
+        kGameFacadeStatic_CurrentMatchGame,
+        kGameFacadeStatic_CurrentGame
+    };
+    for (int s = 0; s < 2 && matchGame == 0; ++s) {
+        uintptr_t value =
+            ReadMemorySafe<uintptr_t>(remoteCall, staticFields + dumpSlots[s]);
+        if (!FieldHoldsMatchGame(remoteCall, value))
+            continue;
+        matchGameOffset = dumpSlots[s];
+        matchGame = value;
+    }
+
+    if (matchGame == 0) {
+        uint64_t discovered = FindIl2CppFieldMatchingFrom(
+            remoteCall, staticFields, 0x0, 0x100, FieldHoldsMatchGame);
+        if (discovered != 0) {
+            matchGameOffset = discovered;
+            matchGame =
+                ReadMemorySafe<uintptr_t>(remoteCall, staticFields + discovered);
+        }
+    }
+
+    if (matchGame == 0) {
+        matchGame = ReadMemorySafe<uintptr_t>(remoteCall,
+                                              staticFields + matchGameOffset);
+    }
 
     gFreeFireMatchGameFieldOffset = matchGameOffset;
+    self.staticFieldsAddress = staticFields;
 
-    if (verified) {
-        self.staticFieldsAddress = staticFields;
-        self.unverifiedStaticFields = 0;
-    } else {
-        self.unverifiedStaticFields = staticFields;
-    }
-
-    LOG(@"[FreeFire] GameFacade static fields: 0x%lx (candidate=0x%lx) "
+    LOG(@"[FreeFire] GameFacade static fields: 0x%lx "
         @"matchGameField=0x%llx matchGame=0x%lx",
-        (unsigned long)staticFields, (unsigned long)candidate,
+        (unsigned long)staticFields,
         (unsigned long long)matchGameOffset, (unsigned long)matchGame);
 
     [self
@@ -562,7 +545,7 @@ NS_ASSUME_NONNULL_BEGIN
                                  (unsigned long)staticFields,
                                  (unsigned long long)matchGameOffset,
                                  (unsigned long)matchGame,
-                                 verified ? @"" : @" (unverified)"]];
+                                 @" (verified)"]];
 
     return staticFields;
 }
@@ -727,8 +710,8 @@ NS_ASSUME_NONNULL_BEGIN
         // gets worse than a plain offset read.
         uint64_t discovered = 0;
         if ([self discoveryDue]) {
-            discovered = FindIl2CppFieldMatching(
-                remoteCall, staticFields, 0x100, FieldHoldsMatchGame);
+            discovered = FindIl2CppFieldMatchingFrom(
+                remoteCall, staticFields, 0x0, 0x300, FieldHoldsMatchGame);
         }
 
         if (discovered != 0) {
