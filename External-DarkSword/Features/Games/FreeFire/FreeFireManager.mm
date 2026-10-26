@@ -56,6 +56,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, copy) NSArray<FreeFireEntitySnapshot *> *entitySnapshots;
 @property(nonatomic, readwrite) BOOL hasValidFrame;
 @property(nonatomic, assign) uintptr_t staticFieldsAddress;
+@property(nonatomic, assign) uintptr_t unverifiedStaticFields;
+@property(nonatomic, assign) NSTimeInterval lastStaticResolveAttempt;
 @property(nonatomic, strong) RemoteWebViewOverlay *remoteWebViewOverlay;
 @property(nonatomic, assign) NSTimeInterval lastDiscoveryAttempt;
 
@@ -70,6 +72,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)diagnosticsDue;
 - (void)reportDiagnostics:(NSString *)message;
 - (void)reportStage:(NSString *)stage;
+- (void)reportStatus:(NSString *)status;
 
 @end
 
@@ -105,6 +108,9 @@ NS_ASSUME_NONNULL_BEGIN
 
     self.isRunning = YES;
     LOG(@"[FreeFire] Starting external snapshot loop...");
+    [self reportDiagnostics:
+              [NSString stringWithFormat:@"loop started (ESP=%@)",
+                                         self.isESPEnabled ? @"on" : @"off"]];
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
       uint32_t overlayCooldown = 0;
@@ -125,6 +131,7 @@ NS_ASSUME_NONNULL_BEGIN
                                                            .binaryBase]];
                       } else {
                           baseCooldown = 50; // Throttle retry to ~0.5s instead of 100 FPS
+                          [self reportStatus:@"stage 0/6: binary base not resolved (retrying)"];
                       }
                   } else {
                       baseCooldown--;
@@ -152,6 +159,13 @@ NS_ASSUME_NONNULL_BEGIN
                   if (self.isESPEnabled) {
                       [self updateSnapshot:self.remoteCall];
                   }
+
+                  // Never go silent: say why nothing is being drawn.
+                  if (!self.remoteWebViewOverlay.isOverlayReady) {
+                      [self reportStatus:@"overlay not ready: ESP menu and drawing unavailable"];
+                  } else if (!self.isESPEnabled) {
+                      [self reportStatus:@"ESP is off: enable Player ESP in the overlay menu"];
+                  }
               }
           }
           usleep(10000); // ~100 FPS loop
@@ -167,6 +181,7 @@ NS_ASSUME_NONNULL_BEGIN
         self.viewProjectionData = [NSData data];
         self.hasValidFrame = NO;
         self.staticFieldsAddress = 0;
+        self.unverifiedStaticFields = 0;
     }
 }
 
@@ -232,6 +247,29 @@ NS_ASSUME_NONNULL_BEGIN
 
     lastStage = [stage copy];
     [self reportDiagnostics:stage];
+}
+
+// Status lines (base / overlay / ESP toggle) keep their own de-duplication
+// slot so they never alternate with stage lines and flood the log.
+- (void)reportStatus:(NSString *)status {
+    static NSString *lastStatus = nil;
+    static NSTimeInterval lastAt = 0;
+
+    if (status.length == 0) {
+        lastStatus = nil;
+        return;
+    }
+
+    if (lastStatus != nil && [lastStatus isEqualToString:status])
+        return;
+
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (lastStatus != nil && now - lastAt < 0.5)
+        return;
+
+    lastStatus = [status copy];
+    lastAt = now;
+    [self reportDiagnostics:status];
 }
 
 - (uint64_t)getFreeFireBaseAddress {
@@ -364,6 +402,17 @@ NS_ASSUME_NONNULL_BEGIN
         return self.staticFieldsAddress;
     }
 
+    // A block chosen without verification is re-resolved at most once per
+    // second, so a lobby-time guess can be replaced as soon as the match
+    // state (and a verifiable MatchGame reference) appears.
+    if (self.unverifiedStaticFields != 0) {
+        NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+        if (now - self.lastStaticResolveAttempt < 1.0) {
+            return self.unverifiedStaticFields;
+        }
+    }
+    self.lastStaticResolveAttempt = [NSDate timeIntervalSinceReferenceDate];
+
     uintptr_t candidate = 0;
 
     // Strategy 1: Resolve via Il2Cpp MethodInfo (like AoV)
@@ -418,10 +467,32 @@ NS_ASSUME_NONNULL_BEGIN
     uintptr_t staticFields = 0;
     uint64_t matchGameOffset = 0;
     uintptr_t matchGame = 0;
+    BOOL verified = NO;
 
     for (int option = 0; option < 2 && staticFields == 0; ++option) {
         uintptr_t block = option == 0 ? fromKlass : candidate;
         if (!validOffsetPtr(block))
+            continue;
+
+        // Slots 0x00/0x08 (CurrentGame / CurrentMatchGame) are skipped by
+        // the generic scanner, which starts at 0x10 to skip object headers,
+        // yet they are exactly where the dump says MatchGame lives.
+        const uint64_t dumpSlots[] = {
+            kGameFacadeStatic_CurrentMatchGame,
+            kGameFacadeStatic_CurrentGame
+        };
+        for (int s = 0; s < 2 && staticFields == 0; ++s) {
+            uintptr_t value =
+                ReadMemorySafe<uintptr_t>(remoteCall, block + dumpSlots[s]);
+            if (!FieldHoldsMatchGame(remoteCall, value))
+                continue;
+
+            staticFields = block;
+            matchGameOffset = dumpSlots[s];
+            matchGame = value;
+            verified = YES;
+        }
+        if (staticFields != 0)
             continue;
 
         uint64_t discovered = FindIl2CppFieldMatching(
@@ -432,11 +503,31 @@ NS_ASSUME_NONNULL_BEGIN
         staticFields = block;
         matchGameOffset = discovered;
         matchGame = ReadMemorySafe<uintptr_t>(remoteCall, block + discovered);
+        verified = YES;
     }
 
     if (staticFields == 0) {
-        // Lobby (no MatchGame yet) or renamed classes: keep the dump layout.
-        staticFields = validOffsetPtr(fromKlass) ? fromKlass : candidate;
+        // Lobby (no MatchGame yet) or renamed classes: pick the block whose
+        // CurrentGame slot really holds a game object, otherwise keep the
+        // dump layout.
+        uintptr_t blocks[2] = {
+            validOffsetPtr(fromKlass) ? fromKlass : 0,
+            validOffsetPtr(candidate) ? candidate : 0
+        };
+        uintptr_t chosen = 0;
+        for (int b = 0; b < 2 && chosen == 0; ++b) {
+            if (blocks[b] == 0)
+                continue;
+            uintptr_t currentGame = ReadMemorySafe<uintptr_t>(
+                remoteCall, blocks[b] + kGameFacadeStatic_CurrentGame);
+            if (Il2CppClassNameContains(remoteCall, currentGame, "Game"))
+                chosen = blocks[b];
+        }
+
+        staticFields = chosen != 0
+                           ? chosen
+                           : (validOffsetPtr(fromKlass) ? fromKlass : candidate);
+        verified = (chosen != 0);
         matchGameOffset = gFreeFireMatchGameFieldOffset != 0
                               ? gFreeFireMatchGameFieldOffset
                               : kGameFacadeStatic_CurrentMatchGame;
@@ -450,7 +541,13 @@ NS_ASSUME_NONNULL_BEGIN
         return 0;
 
     gFreeFireMatchGameFieldOffset = matchGameOffset;
-    self.staticFieldsAddress = staticFields;
+
+    if (verified) {
+        self.staticFieldsAddress = staticFields;
+        self.unverifiedStaticFields = 0;
+    } else {
+        self.unverifiedStaticFields = staticFields;
+    }
 
     LOG(@"[FreeFire] GameFacade static fields: 0x%lx (candidate=0x%lx) "
         @"matchGameField=0x%llx matchGame=0x%lx",
@@ -461,10 +558,11 @@ NS_ASSUME_NONNULL_BEGIN
         reportDiagnostics:
             [NSString
                 stringWithFormat:@"GameFacade staticFields=0x%lx "
-                                 @"matchGameField=0x%llx matchGame=0x%lx",
+                                 @"matchGameField=0x%llx matchGame=0x%lx%@",
                                  (unsigned long)staticFields,
                                  (unsigned long long)matchGameOffset,
-                                 (unsigned long)matchGame]];
+                                 (unsigned long)matchGame,
+                                 verified ? @"" : @" (unverified)"]];
 
     return staticFields;
 }
