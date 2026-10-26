@@ -49,18 +49,18 @@ struct ContentView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    if manager.isDebug {
-                        NavigationLink {
-                            LogScreen(
-                                manager: manager,
-                                palette: palette,
-                                language: language
-                            )
-                        } label: {
-                            Image(systemName: "doc.text")
-                        }
-                        .accessibilityLabel(AppStrings.logTitle(language))
+                    // The Log screen carries the Free Fire diagnostics, so it
+                    // stays reachable even when the debug flag is off.
+                    NavigationLink {
+                        LogScreen(
+                            manager: manager,
+                            palette: palette,
+                            language: language
+                        )
+                    } label: {
+                        Image(systemName: "doc.text")
                     }
+                    .accessibilityLabel(AppStrings.logTitle(language))
 
                     Button {
                         prefersDarkTheme.toggle()
