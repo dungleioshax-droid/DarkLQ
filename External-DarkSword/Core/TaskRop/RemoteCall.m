@@ -2281,8 +2281,10 @@ static BOOL remote_invoke_selector_on_main_thread_raw(
         static uint64_t selGetReturnValue = 0;
         static uint64_t selMethodReturnLength = 0;
         static uint64_t cachedProcTrojanMem = 0;
+        static __unsafe_unretained RemoteCall *cachedProcInstance = nil;
 
-        if (cachedProcTrojanMem != proc.trojanMem || !clsNSInvocation) {
+        if (cachedProcInstance != proc || cachedProcTrojanMem != proc.trojanMem || !clsNSInvocation) {
+            cachedProcInstance = proc;
             cachedProcTrojanMem = proc.trojanMem;
             clsNSInvocation = remote_getClass(proc, "NSInvocation");
             selMethodSignatureForSelector =

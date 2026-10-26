@@ -478,7 +478,13 @@ final class DarkSwordManager: ObservableObject {
         }
     }
 
-    let freeFireBundleIdentifier = "com.dts.freefireth"
+    var freeFireBundleIdentifier: String {
+        if isApplicationInstalled(bundleIdentifier: "com.dts.freefiremax") &&
+            !isApplicationInstalled(bundleIdentifier: "com.dts.freefireth") {
+            return "com.dts.freefiremax"
+        }
+        return "com.dts.freefireth"
+    }
 
     // The overlay menu is shared by both games, so resolve which game is
     // currently connected before syncing or applying menu options.
@@ -486,7 +492,7 @@ final class DarkSwordManager: ObservableObject {
         let process = connectedProcess.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
-        if process.lowercased().contains("freefire") {
+        if process.lowercased().contains("freefire") || process.lowercased().contains("ffmax") {
             return "freefire"
         }
         if !process.isEmpty, process == aovProcess {
@@ -950,7 +956,11 @@ final class DarkSwordManager: ObservableObject {
         if !configured.isEmpty && isProcessRunning(configured) {
             return configured
         }
-        for candidate in ["FreeFire", "freefireth", "com.dts.freefireth"] {
+        for candidate in [
+            "FreeFire", "freefire", "FreeFireTH", "freefireth",
+            "FreeFireMAX", "freefiremax", "FreeFireMax", "FFMAX", "ffmax",
+            "com.dts.freefireth", "com.dts.freefiremax"
+        ] {
             if isProcessRunning(candidate) {
                 return candidate
             }
@@ -1132,6 +1142,11 @@ final class DarkSwordManager: ObservableObject {
             return
         }
 
+        if isProcessRunning(process) || isProcessRunning("FreeFire") || isProcessRunning("freefireth") {
+            connectFreeFireRemoteCall()
+            return
+        }
+
         if remoteConnected && connectedProcess != process {
             disconnectRemoteCallThenOpenFreeFire(process: process)
             return
@@ -1281,16 +1296,20 @@ final class DarkSwordManager: ObservableObject {
 
     func freeFireGameStatus() -> GameStatusInfo {
         let process = resolvedFreeFireProcessName()
+        let bundleId = freeFireBundleIdentifier
         return GameStatusInfo(
-            name: "Free Fire",
-            bundleIdentifier: freeFireBundleIdentifier,
+            name: bundleId.contains("max") ? "Free Fire MAX" : "Free Fire",
+            bundleIdentifier: bundleId,
             processName: process,
             isInstalled: isApplicationInstalled(
-                bundleIdentifier: freeFireBundleIdentifier
-            ),
+                bundleIdentifier: bundleId
+            ) || isApplicationInstalled(bundleIdentifier: "com.dts.freefireth")
+              || isApplicationInstalled(bundleIdentifier: "com.dts.freefiremax"),
             isRunning: isProcessRunning(process)
                 || isProcessRunning("FreeFire")
                 || isProcessRunning("freefireth")
+                || isProcessRunning("FreeFireMAX")
+                || isProcessRunning("freefiremax")
         )
     }
 

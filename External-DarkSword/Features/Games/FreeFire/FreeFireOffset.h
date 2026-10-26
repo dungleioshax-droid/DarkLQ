@@ -16,6 +16,12 @@ inline constexpr uint64_t kGameFacade_CurrentLocalPlayer = 0x591BD2C;
 inline constexpr uint64_t kGameFacade_GetLocalPlayerOrObServer = 0x5919628;
 inline constexpr uint64_t kGameFacade_IsLocalTeammate = 0x591C5B4;
 inline constexpr uint64_t kGameFacade_CCtor = 0x5944B44;
+inline constexpr uint64_t kGameFacade_SetCurrentGame = 0x5918864;
+
+// MethodInfo RVAs (from ScriptMetadataMethod in FFDUMP)
+inline constexpr uint64_t kMethodInfo_GameFacade_CCtor = 0xFCA16C68;
+inline constexpr uint64_t kMethodInfo_GameFacade_CurrentLocalPlayer = 0xFCA0C298;
+inline constexpr uint64_t kMethodInfo_GameFacade_SetCurrentGame = 0xFCA0AEA8;
 
 inline constexpr uint64_t kMatchGame_GetCameraControllerManager = 0x5A9CFC4;
 inline constexpr uint64_t kMatchGame_GetRepEntity = 0x5A9D2C8;
@@ -86,7 +92,10 @@ inline constexpr uint64_t kEntry_Value = 0x10;
 inline constexpr uint64_t kSystemString_Length = 0x10;
 inline constexpr uint64_t kSystemString_Chars = 0x14;
 
-// Il2CppClass Layout
+// Il2CppClass & MethodInfo Layout
+inline constexpr uint64_t kMethodInfo_Klass = 0x20;
+inline constexpr uint64_t kIl2CppClass_StaticFields = 0xB8;
+inline constexpr uint64_t kIl2CppClass_Parent = 0x58;
 inline constexpr uint64_t kIl2CppClass_Name = 0x10;
 
 #endif /* FreeFireOffset_h */

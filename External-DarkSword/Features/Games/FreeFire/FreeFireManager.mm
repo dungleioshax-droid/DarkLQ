@@ -366,20 +366,43 @@ NS_ASSUME_NONNULL_BEGIN
 
     uintptr_t candidate = 0;
 
-    // Attempt 1: Decode from GameFacade..cctor (0x5944B44)
-    uintptr_t cctorAddr = self.binaryBase + kGameFacade_CCtor;
-    candidate = DecodeArm64AdrLdr(remoteCall, cctorAddr);
+    // Strategy 1: Resolve via Il2Cpp MethodInfo (like AoV)
+    const uint64_t methodInfoOffsets[] = {
+        kMethodInfo_GameFacade_CCtor,
+        kMethodInfo_GameFacade_CurrentLocalPlayer,
+        kMethodInfo_GameFacade_SetCurrentGame
+    };
 
-    // Attempt 2: Decode from CurrentLocalPlayer (0x591BD2C)
-    if (!validOffsetPtr(candidate)) {
-        uintptr_t clpAddr = self.binaryBase + kGameFacade_CurrentLocalPlayer;
-        candidate = DecodeArm64AdrLdr(remoteCall, clpAddr);
+    for (int i = 0; i < 3 && !validOffsetPtr(candidate); ++i) {
+        uintptr_t methodInfo = self.binaryBase + methodInfoOffsets[i];
+        uintptr_t klass = ReadMemorySafe<uintptr_t>(remoteCall, methodInfo + kMethodInfo_Klass);
+        if (validOffsetPtr(klass)) {
+            uintptr_t sf = ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_StaticFields);
+            if (validOffsetPtr(sf)) {
+                candidate = sf;
+            } else {
+                candidate = klass;
+            }
+        }
     }
 
-    // Attempt 3: Decode from SetCurrentGame (0x5918864)
+    // Strategy 2: Decode from ARM64 instructions if Strategy 1 did not find it
     if (!validOffsetPtr(candidate)) {
-        uintptr_t scgAddr = self.binaryBase + 0x5918864;
-        candidate = DecodeArm64AdrLdr(remoteCall, scgAddr);
+        // Attempt 2.1: Decode from GameFacade..cctor (0x5944B44)
+        uintptr_t cctorAddr = self.binaryBase + kGameFacade_CCtor;
+        candidate = DecodeArm64AdrLdr(remoteCall, cctorAddr);
+
+        // Attempt 2.2: Decode from CurrentLocalPlayer (0x591BD2C)
+        if (!validOffsetPtr(candidate)) {
+            uintptr_t clpAddr = self.binaryBase + kGameFacade_CurrentLocalPlayer;
+            candidate = DecodeArm64AdrLdr(remoteCall, clpAddr);
+        }
+
+        // Attempt 2.3: Decode from SetCurrentGame (0x5918864)
+        if (!validOffsetPtr(candidate)) {
+            uintptr_t scgAddr = self.binaryBase + kGameFacade_SetCurrentGame;
+            candidate = DecodeArm64AdrLdr(remoteCall, scgAddr);
+        }
     }
 
     if (!validOffsetPtr(candidate)) {
@@ -390,7 +413,7 @@ NS_ASSUME_NONNULL_BEGIN
     // fields block itself. If it is a klass, static_fields is at klass + 0xB8.
     // Prefer whichever block actually holds a verified MatchGame reference.
     uintptr_t fromKlass =
-        ReadMemorySafe<uintptr_t>(remoteCall, candidate + 0xB8);
+        ReadMemorySafe<uintptr_t>(remoteCall, candidate + kIl2CppClass_StaticFields);
 
     uintptr_t staticFields = 0;
     uint64_t matchGameOffset = 0;
@@ -594,7 +617,12 @@ NS_ASSUME_NONNULL_BEGIN
     BOOL hasMatchGameClass =
         ReadIl2CppClassName(remoteCall, currentMatchGame, matchGameClass,
                             sizeof(matchGameClass));
-    if (hasMatchGameClass && strstr(matchGameClass, "MatchGame") == NULL) {
+    BOOL isMatchGame = hasMatchGameClass &&
+        (strstr(matchGameClass, "MatchGame") != NULL ||
+         IsSubclassOf(remoteCall, currentMatchGame, "MatchGame") ||
+         IsSubclassOf(remoteCall, currentMatchGame, "COWGameBase"));
+
+    if (validOffsetPtr(currentMatchGame) && hasMatchGameClass && !isMatchGame) {
         // The dump offset points at another object in this build; repair it with
         // the field that verifiably holds a MatchGame reference. When nothing
         // verifies (renamed classes) the dump offset is kept, so behaviour never
@@ -699,7 +727,7 @@ NS_ASSUME_NONNULL_BEGIN
 
     int32_t dictCount =
         ReadMemorySafe<int32_t>(remoteCall, repDict + kDictionary_Count);
-    if (dictCount <= 0 || dictCount > 200) {
+    if (dictCount <= 0 || dictCount > 10000) {
         [self reportStage:
                   [NSString stringWithFormat:@"stage 5/6: dictionary count "
                                              @"%d out of range",
@@ -722,13 +750,13 @@ NS_ASSUME_NONNULL_BEGIN
 
     int32_t maxEntries = ReadMemorySafe<int32_t>(
         remoteCall, entriesArray + kArray_Length);
-    int32_t loopLimit = std::min(maxEntries, 150);
+    int32_t loopLimit = std::min(maxEntries, 2048);
 
     CGFloat sw = self.remoteWebViewOverlay.cachedScreenWidth;
     CGFloat sh = self.remoteWebViewOverlay.cachedScreenHeight;
     if (sw <= 0 || sh <= 0) {
-        sw = kWidth;
-        sh = kHeight;
+        sw = MAX(kWidth, kHeight);
+        sh = MIN(kWidth, kHeight);
     }
 
     // Pass 1: find hostTeamID if localUserID is known
@@ -814,7 +842,8 @@ NS_ASSUME_NONNULL_BEGIN
             sampleClasses += className;
         }
 
-        if (strncmp(className, "Player", 6) != 0) {
+        if (strncmp(className, "Player", 6) != 0 &&
+            !IsSubclassOf(remoteCall, entity, "Player")) {
             ++nonPlayerCount;
             continue;
         }

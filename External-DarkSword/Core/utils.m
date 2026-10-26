@@ -781,11 +781,30 @@ uint64_t procbyname(const char *name) {
     }
 
     uint64_t heads[2] = {kernproc_head(), allproc_head()};
+    // Pass 1: exact match
     for (size_t head_index = 0; head_index < 2; head_index++) {
         uint64_t proc = heads[head_index];
         for (int iter = 0; is_kptr(proc) && iter < 4096; iter++) {
             char *p_name = proc_get_p_name(proc).data;
             if (strcmp(p_name, name) == 0)
+                return proc;
+
+            uint64_t next = S(ds_kread64(proc + off_proc_p_list_le_next));
+            if (!is_kptr(next) || next == proc) {
+                break;
+            }
+            proc = next;
+        }
+    }
+
+    // Pass 2: case-insensitive & prefix match
+    for (size_t head_index = 0; head_index < 2; head_index++) {
+        uint64_t proc = heads[head_index];
+        for (int iter = 0; is_kptr(proc) && iter < 4096; iter++) {
+            char *p_name = proc_get_p_name(proc).data;
+            if (strcasecmp(p_name, name) == 0 ||
+                (strlen(name) >= 15 && strncasecmp(p_name, name, 15) == 0) ||
+                (strlen(p_name) >= 15 && strncasecmp(p_name, name, 15) == 0))
                 return proc;
 
             uint64_t next = S(ds_kread64(proc + off_proc_p_list_le_next));

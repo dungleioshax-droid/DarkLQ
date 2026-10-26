@@ -109,6 +109,12 @@ static bool ReadCameraVPAndWorldMatrix(RemoteCall *remoteCall, uintptr_t camera,
 
     uintptr_t nativeCamera =
         ReadMemorySafe<uintptr_t>(remoteCall, camera + kUnityObject_CachedPtr);
+    if (!validOffsetPtr(nativeCamera)) {
+        nativeCamera = ReadMemorySafe<uintptr_t>(remoteCall, camera + 0x8);
+        if (!validOffsetPtr(nativeCamera)) {
+            nativeCamera = ReadMemorySafe<uintptr_t>(remoteCall, camera + 0x18);
+        }
+    }
     if (!validOffsetPtr(nativeCamera))
         return false;
 
@@ -179,6 +185,12 @@ static bool ReadTransformPosition(RemoteCall *remoteCall,
 
     uintptr_t nativeTransform = ReadMemorySafe<uintptr_t>(
         remoteCall, managedTransform + kUnityObject_CachedPtr);
+    if (!validOffsetPtr(nativeTransform)) {
+        nativeTransform = ReadMemorySafe<uintptr_t>(remoteCall, managedTransform + 0x8);
+        if (!validOffsetPtr(nativeTransform)) {
+            nativeTransform = ReadMemorySafe<uintptr_t>(remoteCall, managedTransform + 0x18);
+        }
+    }
     if (!validOffsetPtr(nativeTransform))
         return false;
 
@@ -319,6 +331,29 @@ static bool ReadIl2CppClassName(RemoteCall *remoteCall, uintptr_t object,
     return true;
 }
 
+static bool IsSubclassOf(RemoteCall *remoteCall, uintptr_t object,
+                         const char *targetName) {
+    if (!remoteCall || !validOffsetPtr(object) || !targetName)
+        return false;
+
+    uintptr_t klass = ReadMemorySafe<uintptr_t>(remoteCall, object);
+    for (int depth = 0; depth < 10 && validOffsetPtr(klass); ++depth) {
+        uintptr_t namePtr =
+            ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Name);
+        if (validOffsetPtr(namePtr)) {
+            char buffer[64] = {0};
+            if ([remoteCall remoteRead:namePtr to:buffer size:sizeof(buffer) - 1]) {
+                buffer[sizeof(buffer) - 1] = '\0';
+                if (strstr(buffer, targetName) != NULL) {
+                    return true;
+                }
+            }
+        }
+        klass = ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Parent);
+    }
+    return false;
+}
+
 static bool Il2CppClassNameContains(RemoteCall *remoteCall, uintptr_t object,
                                     const char *needle) {
     if (!needle)
@@ -343,7 +378,9 @@ static uint64_t gFreeFireCameraFieldOffset = 0;
 static uint64_t gFreeFireEntitiesFieldOffset = 0;
 
 static bool FieldHoldsMatchGame(RemoteCall *remoteCall, uintptr_t value) {
-    return Il2CppClassNameContains(remoteCall, value, "MatchGame");
+    return IsSubclassOf(remoteCall, value, "MatchGame") ||
+           IsSubclassOf(remoteCall, value, "COWGameBase") ||
+           Il2CppClassNameContains(remoteCall, value, "MatchGame");
 }
 
 static bool FieldHoldsCamera(RemoteCall *remoteCall, uintptr_t value) {
@@ -383,7 +420,7 @@ static bool LooksLikePlayerDictionary(RemoteCall *remoteCall, uintptr_t dict) {
 
     int32_t count =
         ReadMemorySafe<int32_t>(remoteCall, dict + kDictionary_Count);
-    if (count < 0 || count > 200)
+    if (count < 0 || count > 10000)
         return false;
     if (count == 0)
         return true;
@@ -398,7 +435,7 @@ static bool LooksLikePlayerDictionary(RemoteCall *remoteCall, uintptr_t dict) {
     if (maxEntries <= 0)
         return false;
 
-    int32_t probe = std::min(maxEntries, 8);
+    int32_t probe = std::min(maxEntries, 32);
     for (int32_t i = 0; i < probe; ++i) {
         uintptr_t entryAddr =
             entries + kArray_Vector + (uint64_t)i * kEntry_Size;
@@ -410,7 +447,8 @@ static bool LooksLikePlayerDictionary(RemoteCall *remoteCall, uintptr_t dict) {
         uintptr_t value =
             ReadMemorySafe<uintptr_t>(remoteCall, entryAddr + kEntry_Value);
         if (validOffsetPtr(value) &&
-            Il2CppClassNameContains(remoteCall, value, "Player"))
+            (IsSubclassOf(remoteCall, value, "Player") ||
+             Il2CppClassNameContains(remoteCall, value, "Player")))
             return true;
     }
 
@@ -443,14 +481,13 @@ static uintptr_t DecodeArm64AdrLdr(RemoteCall *remoteCall, uintptr_t funcAddr) {
     if (!validOffsetPtr(funcAddr) || !remoteCall)
         return 0;
 
-    uint32_t insns[16] = {0};
+    uint32_t insns[32] = {0};
     if (![remoteCall remoteRead:funcAddr to:insns size:sizeof(insns)])
         return 0;
 
-    uintptr_t adrpTarget = 0;
-    uint32_t adrpReg = 0xFF;
+    uintptr_t adrpTargets[32] = {0};
 
-    for (int i = 0; i < 16; ++i) {
+    for (int i = 0; i < 32; ++i) {
         uint32_t insn = insns[i];
         uintptr_t pc = funcAddr + (uintptr_t)i * 4;
 
@@ -464,17 +501,16 @@ static uintptr_t DecodeArm64AdrLdr(RemoteCall *remoteCall, uintptr_t funcAddr) {
                 imm |= 0xFFFFFFFFFFE00000LL;
             }
             imm <<= 12;
-            adrpTarget = (pc & ~0xFFFULL) + imm;
-            adrpReg = rd;
+            adrpTargets[rd] = (pc & ~0xFFFULL) + imm;
             continue;
         }
 
         // LDR Xt, [Xn, #imm12] (64-bit)
-        if (adrpReg != 0xFF && (insn & 0xFFC00000) == 0xF9400000) {
+        if ((insn & 0xFFC00000) == 0xF9400000) {
             uint32_t rn = (insn >> 5) & 0x1F;
-            if (rn == adrpReg) {
+            if (adrpTargets[rn] != 0) {
                 uint32_t imm12 = ((insn >> 10) & 0xFFF) << 3;
-                uintptr_t ptrAddr = adrpTarget + imm12;
+                uintptr_t ptrAddr = adrpTargets[rn] + imm12;
                 uintptr_t resolved = ReadMemorySafe<uintptr_t>(remoteCall, ptrAddr);
                 if (validOffsetPtr(resolved))
                     return resolved;
@@ -482,13 +518,17 @@ static uintptr_t DecodeArm64AdrLdr(RemoteCall *remoteCall, uintptr_t funcAddr) {
         }
 
         // ADD Xd, Xn, #imm12 (64-bit)
-        if (adrpReg != 0xFF && (insn & 0xFF800000) == 0x91000000) {
+        if ((insn & 0xFF800000) == 0x91000000) {
             uint32_t rn = (insn >> 5) & 0x1F;
-            if (rn == adrpReg) {
+            if (adrpTargets[rn] != 0) {
                 uint32_t imm12 = (insn >> 10) & 0xFFF;
-                uintptr_t targetAddr = adrpTarget + imm12;
-                if (validOffsetPtr(targetAddr))
+                uintptr_t targetAddr = adrpTargets[rn] + imm12;
+                if (validOffsetPtr(targetAddr)) {
+                    uintptr_t deref = ReadMemorySafe<uintptr_t>(remoteCall, targetAddr);
+                    if (validOffsetPtr(deref))
+                        return deref;
                     return targetAddr;
+                }
             }
         }
     }
