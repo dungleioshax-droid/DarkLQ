@@ -42,6 +42,20 @@ struct GameListScreen: View {
                     .padding(.horizontal, 22)
                 }
 
+                HStack {
+                    Text(language == .vietnamese ? "Chế độ Render AoV:" : "AoV Render Mode:")
+                        .font(.system(.caption, design: .monospaced).weight(.semibold))
+                        .foregroundColor(palette.secondaryText)
+                    Spacer()
+                    Picker("", selection: $manager.aovRenderMode) {
+                        Text("Internal").tag("internal")
+                        Text("SpringBoard").tag("springboard")
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 200)
+                }
+                .padding(.horizontal, 22)
+
                 Button {
                     lastAttemptedGame = "aov"
                     isWaitingForGameActionResult = true

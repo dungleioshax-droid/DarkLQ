@@ -173,7 +173,7 @@ final class DarkSwordManager: ObservableObject {
         static let aovShowsName = false
         static let aovShowsDistance = false
         static let aovCameraHeight = 1.0
-        static let aovRenderMode = "springboard"
+        static let aovRenderMode = "internal"
         static let freeFireProcess = "FreeFire"
         static let freeFireESPEnabled = false
         static let freeFireShowsLine = false
@@ -557,7 +557,8 @@ final class DarkSwordManager: ObservableObject {
             return existing
         }
 
-        let mig = useMigFilterBypass
+        // SpringBoard must always use useMigFilterBypass: NO (same as DarkSpeed)
+        let mig = false
         DispatchQueue.main.async {
             self.appendLog("Connecting RemoteCall to SpringBoard for external overlay...")
         }
