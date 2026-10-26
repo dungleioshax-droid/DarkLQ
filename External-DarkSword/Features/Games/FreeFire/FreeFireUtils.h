@@ -284,6 +284,159 @@ static NSString *ReadIl2CppString(RemoteCall *remoteCall, uintptr_t stringAddr) 
     return [NSString stringWithCharacters:buffer length:length];
 }
 
+// MARK: - Il2Cpp Object Introspection
+
+static bool ReadIl2CppClassName(RemoteCall *remoteCall, uintptr_t object,
+                                char *out, size_t capacity) {
+    if (!remoteCall || !out || capacity == 0)
+        return false;
+
+    out[0] = '\0';
+    if (!validOffsetPtr(object))
+        return false;
+
+    uintptr_t klass = ReadMemorySafe<uintptr_t>(remoteCall, object);
+    if (!validOffsetPtr(klass))
+        return false;
+
+    uintptr_t namePtr =
+        ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Name);
+    if (!validOffsetPtr(namePtr))
+        return false;
+
+    char buffer[64] = {0};
+    if (![remoteCall remoteRead:namePtr to:buffer size:sizeof(buffer) - 1])
+        return false;
+
+    size_t length = 0;
+    while (length < sizeof(buffer) && buffer[length] != '\0')
+        ++length;
+    if (length == 0 || length >= capacity)
+        return false;
+
+    memcpy(out, buffer, length);
+    out[length] = '\0';
+    return true;
+}
+
+static bool Il2CppClassNameContains(RemoteCall *remoteCall, uintptr_t object,
+                                    const char *needle) {
+    if (!needle)
+        return false;
+
+    char name[64] = {0};
+    if (!ReadIl2CppClassName(remoteCall, object, name, sizeof(name)))
+        return false;
+
+    return strstr(name, needle) != NULL;
+}
+
+// MARK: - Verified Field Discovery
+//
+// The offsets in FreeFireOffset.h come from one dump and shift between Free
+// Fire builds. These helpers find a field by the il2cpp class name of the
+// object it points at, so the ESP survives an offset mismatch.
+
+static uint64_t gFreeFireMatchGameFieldOffset = 0;
+static uint64_t gFreeFireCameraManagerFieldOffset = 0;
+static uint64_t gFreeFireCameraFieldOffset = 0;
+static uint64_t gFreeFireEntitiesFieldOffset = 0;
+
+static bool FieldHoldsMatchGame(RemoteCall *remoteCall, uintptr_t value) {
+    return Il2CppClassNameContains(remoteCall, value, "MatchGame");
+}
+
+static bool FieldHoldsCamera(RemoteCall *remoteCall, uintptr_t value) {
+    return Il2CppClassNameContains(remoteCall, value, "Camera");
+}
+
+// A camera manager either carries its type in the class name or owns a
+// UnityEngine.Camera reference in one of its first fields.
+static bool LooksLikeCameraManager(RemoteCall *remoteCall, uintptr_t object) {
+    if (!validOffsetPtr(object))
+        return false;
+
+    if (Il2CppClassNameContains(remoteCall, object, "CameraController"))
+        return true;
+
+    for (uint64_t offset = 0x10; offset <= 0x60;
+         offset += sizeof(uintptr_t)) {
+        uintptr_t value =
+            ReadMemorySafe<uintptr_t>(remoteCall, object + offset);
+        if (!validOffsetPtr(value))
+            continue;
+        if (FieldHoldsCamera(remoteCall, value))
+            return true;
+    }
+
+    return false;
+}
+
+static bool IsDictionaryObject(RemoteCall *remoteCall, uintptr_t object) {
+    return Il2CppClassNameContains(remoteCall, object, "Dictionary");
+}
+
+// Replication dictionaries are the ones whose values are Player objects.
+static bool LooksLikePlayerDictionary(RemoteCall *remoteCall, uintptr_t dict) {
+    if (!IsDictionaryObject(remoteCall, dict))
+        return false;
+
+    int32_t count =
+        ReadMemorySafe<int32_t>(remoteCall, dict + kDictionary_Count);
+    if (count < 0 || count > 200)
+        return false;
+    if (count == 0)
+        return true;
+
+    uintptr_t entries =
+        ReadMemorySafe<uintptr_t>(remoteCall, dict + kDictionary_Entries);
+    if (!validOffsetPtr(entries))
+        return false;
+
+    int32_t maxEntries =
+        ReadMemorySafe<int32_t>(remoteCall, entries + kArray_Length);
+    if (maxEntries <= 0)
+        return false;
+
+    int32_t probe = std::min(maxEntries, 8);
+    for (int32_t i = 0; i < probe; ++i) {
+        uintptr_t entryAddr =
+            entries + kArray_Vector + (uint64_t)i * kEntry_Size;
+        int32_t hashCode =
+            ReadMemorySafe<int32_t>(remoteCall, entryAddr + kEntry_HashCode);
+        if (hashCode < 0)
+            continue;
+
+        uintptr_t value =
+            ReadMemorySafe<uintptr_t>(remoteCall, entryAddr + kEntry_Value);
+        if (validOffsetPtr(value) &&
+            Il2CppClassNameContains(remoteCall, value, "Player"))
+            return true;
+    }
+
+    return false;
+}
+
+static uint64_t FindIl2CppFieldMatching(
+    RemoteCall *remoteCall, uintptr_t object, uint64_t endOffset,
+    bool (*predicate)(RemoteCall *, uintptr_t)) {
+    if (!remoteCall || !predicate || !validOffsetPtr(object))
+        return 0;
+
+    for (uint64_t offset = 0x10;
+         offset + sizeof(uintptr_t) <= endOffset;
+         offset += sizeof(uintptr_t)) {
+        uintptr_t value =
+            ReadMemorySafe<uintptr_t>(remoteCall, object + offset);
+        if (!validOffsetPtr(value))
+            continue;
+        if (predicate(remoteCall, value))
+            return offset;
+    }
+
+    return 0;
+}
+
 // MARK: - Dynamic ARM64 Static Fields Resolution
 
 static uintptr_t DecodeArm64AdrLdr(RemoteCall *remoteCall, uintptr_t funcAddr) {

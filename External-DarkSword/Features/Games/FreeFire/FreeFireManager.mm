@@ -57,10 +57,19 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, readwrite) BOOL hasValidFrame;
 @property(nonatomic, assign) uintptr_t staticFieldsAddress;
 @property(nonatomic, strong) RemoteWebViewOverlay *remoteWebViewOverlay;
+@property(nonatomic, assign) NSTimeInterval lastDiscoveryAttempt;
 
 - (uint64_t)getFreeFireBaseAddress;
 - (void)updateSnapshot:(RemoteCall *)remoteCall;
 - (void)showOverlay:(RemoteCall *)remoteCall;
+- (BOOL)resolveCamera:(RemoteCall *)remoteCall
+            matchGame:(uintptr_t)currentMatchGame
+               camera:(uintptr_t *)outCamera
+               camMgr:(uintptr_t *)outCamMgr;
+- (BOOL)discoveryDue;
+- (BOOL)diagnosticsDue;
+- (void)reportDiagnostics:(NSString *)message;
+- (void)reportStage:(NSString *)stage;
 
 @end
 
@@ -108,6 +117,12 @@ NS_ASSUME_NONNULL_BEGIN
                       if (self.binaryBase != 0) {
                           LOG(@"[FreeFire] Binary base: 0x%lx",
                               (unsigned long)self.binaryBase);
+                          [self
+                              reportDiagnostics:
+                                  [NSString
+                                      stringWithFormat:@"base=0x%lx",
+                                                       (unsigned long)self
+                                                           .binaryBase]];
                       } else {
                           baseCooldown = 50; // Throttle retry to ~0.5s instead of 100 FPS
                       }
@@ -173,6 +188,50 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)refreshOverlayLayout {
     [self.remoteWebViewOverlay refreshOverlayLayout];
+}
+
+- (BOOL)discoveryDue {
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (now - self.lastDiscoveryAttempt < 1.0)
+        return NO;
+
+    self.lastDiscoveryAttempt = now;
+    return YES;
+}
+
+- (BOOL)diagnosticsDue {
+    static NSTimeInterval lastReport = 0.0;
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (now - lastReport < 1.0)
+        return NO;
+
+    lastReport = now;
+    return YES;
+}
+
+- (void)reportDiagnostics:(NSString *)message {
+    if (message.length == 0 || !self.diagnosticsHandler)
+        return;
+
+    LOG(@"[FreeFire] %@", message);
+    self.diagnosticsHandler(message);
+}
+
+// Stage reports are de-duplicated so the log shows where the chain breaks
+// without flooding during the 100 Hz snapshot loop.
+- (void)reportStage:(NSString *)stage {
+    static NSString *lastStage = nil;
+
+    if (stage.length == 0) {
+        lastStage = nil;
+        return;
+    }
+
+    if (lastStage != nil && [lastStage isEqualToString:stage])
+        return;
+
+    lastStage = [stage copy];
+    [self reportDiagnostics:stage];
 }
 
 - (uint64_t)getFreeFireBaseAddress {
@@ -327,21 +386,64 @@ NS_ASSUME_NONNULL_BEGIN
         return 0;
     }
 
-    // In IL2CPP 64-bit, candidate can be Il2CppClass* (klass) or static_fields.
-    // If klass: static_fields is at klass + 0xB8.
-    uintptr_t staticFields = ReadMemorySafe<uintptr_t>(remoteCall, candidate + 0xB8);
-    if (!validOffsetPtr(staticFields)) {
-        staticFields = candidate;
+    // In IL2CPP 64-bit, candidate can be Il2CppClass* (klass) or the static
+    // fields block itself. If it is a klass, static_fields is at klass + 0xB8.
+    // Prefer whichever block actually holds a verified MatchGame reference.
+    uintptr_t fromKlass =
+        ReadMemorySafe<uintptr_t>(remoteCall, candidate + 0xB8);
+
+    uintptr_t staticFields = 0;
+    uint64_t matchGameOffset = 0;
+    uintptr_t matchGame = 0;
+
+    for (int option = 0; option < 2 && staticFields == 0; ++option) {
+        uintptr_t block = option == 0 ? fromKlass : candidate;
+        if (!validOffsetPtr(block))
+            continue;
+
+        uint64_t discovered = FindIl2CppFieldMatching(
+            remoteCall, block, 0x100, FieldHoldsMatchGame);
+        if (discovered == 0)
+            continue;
+
+        staticFields = block;
+        matchGameOffset = discovered;
+        matchGame = ReadMemorySafe<uintptr_t>(remoteCall, block + discovered);
     }
 
-    if (validOffsetPtr(staticFields)) {
-        self.staticFieldsAddress = staticFields;
-        LOG(@"[FreeFire] Resolved GameFacade static fields: 0x%lx (candidate=0x%lx)",
-            (unsigned long)staticFields, (unsigned long)candidate);
-        return staticFields;
+    if (staticFields == 0) {
+        // Lobby (no MatchGame yet) or renamed classes: keep the dump layout.
+        staticFields = validOffsetPtr(fromKlass) ? fromKlass : candidate;
+        matchGameOffset = gFreeFireMatchGameFieldOffset != 0
+                              ? gFreeFireMatchGameFieldOffset
+                              : kGameFacadeStatic_CurrentMatchGame;
+        matchGame = validOffsetPtr(staticFields)
+                        ? ReadMemorySafe<uintptr_t>(
+                              remoteCall, staticFields + matchGameOffset)
+                        : 0;
     }
 
-    return 0;
+    if (!validOffsetPtr(staticFields))
+        return 0;
+
+    gFreeFireMatchGameFieldOffset = matchGameOffset;
+    self.staticFieldsAddress = staticFields;
+
+    LOG(@"[FreeFire] GameFacade static fields: 0x%lx (candidate=0x%lx) "
+        @"matchGameField=0x%llx matchGame=0x%lx",
+        (unsigned long)staticFields, (unsigned long)candidate,
+        (unsigned long long)matchGameOffset, (unsigned long)matchGame);
+
+    [self
+        reportDiagnostics:
+            [NSString
+                stringWithFormat:@"GameFacade staticFields=0x%lx "
+                                 @"matchGameField=0x%llx matchGame=0x%lx",
+                                 (unsigned long)staticFields,
+                                 (unsigned long long)matchGameOffset,
+                                 (unsigned long)matchGame]];
+
+    return staticFields;
 }
 
 - (void)showOverlay:(RemoteCall *)remoteCall {
@@ -385,6 +487,81 @@ NS_ASSUME_NONNULL_BEGIN
     [self.remoteWebViewOverlay updateOverlayTargets:overlayTargets];
 }
 
+// Resolves the camera controller manager and its main camera. Field offsets
+// come from the dump first and are rediscovered by class name when they no
+// longer point at a live camera.
+- (BOOL)resolveCamera:(RemoteCall *)remoteCall
+            matchGame:(uintptr_t)currentMatchGame
+               camera:(uintptr_t *)outCamera
+               camMgr:(uintptr_t *)outCamMgr {
+    if (!remoteCall || !validOffsetPtr(currentMatchGame))
+        return NO;
+
+    uint64_t camMgrOffset = gFreeFireCameraManagerFieldOffset != 0
+                                ? gFreeFireCameraManagerFieldOffset
+                                : kMatchGame_CameraControllerManager;
+    uintptr_t camMgr =
+        ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + camMgrOffset);
+
+    uint64_t cameraOffset = gFreeFireCameraFieldOffset != 0
+                                ? gFreeFireCameraFieldOffset
+                                : kCameraControllerManager_MainCamera;
+    uintptr_t camera =
+        validOffsetPtr(camMgr)
+            ? ReadMemorySafe<uintptr_t>(remoteCall, camMgr + cameraOffset)
+            : 0;
+
+    if (!validOffsetPtr(camera) && validOffsetPtr(camMgr)) {
+        camera = ReadMemorySafe<uintptr_t>(
+            remoteCall, camMgr + kCameraControllerManager_SubCamera);
+        if (validOffsetPtr(camera))
+            cameraOffset = kCameraControllerManager_SubCamera;
+    }
+
+    if (!validOffsetPtr(camera) && [self discoveryDue]) {
+        uint64_t discoveredMgr = FindIl2CppFieldMatching(
+            remoteCall, currentMatchGame, 0x300, LooksLikeCameraManager);
+        if (discoveredMgr != 0) {
+            camMgrOffset = discoveredMgr;
+            gFreeFireCameraManagerFieldOffset = discoveredMgr;
+            camMgr = ReadMemorySafe<uintptr_t>(
+                remoteCall, currentMatchGame + discoveredMgr);
+        }
+
+        if (validOffsetPtr(camMgr)) {
+            cameraOffset = kCameraControllerManager_MainCamera;
+            camera = ReadMemorySafe<uintptr_t>(remoteCall,
+                                              camMgr + cameraOffset);
+            if (!validOffsetPtr(camera)) {
+                cameraOffset = kCameraControllerManager_SubCamera;
+                camera = ReadMemorySafe<uintptr_t>(remoteCall,
+                                                  camMgr + cameraOffset);
+            }
+        }
+
+        if (validOffsetPtr(camMgr) && !validOffsetPtr(camera)) {
+            uint64_t discoveredCamera = FindIl2CppFieldMatching(
+                remoteCall, camMgr, 0x100, FieldHoldsCamera);
+            if (discoveredCamera != 0) {
+                cameraOffset = discoveredCamera;
+                gFreeFireCameraFieldOffset = discoveredCamera;
+                camera = ReadMemorySafe<uintptr_t>(
+                    remoteCall, camMgr + discoveredCamera);
+            }
+        }
+    }
+
+    if (!validOffsetPtr(camera))
+        return NO;
+
+    gFreeFireCameraFieldOffset = cameraOffset;
+    if (outCamera)
+        *outCamera = camera;
+    if (outCamMgr)
+        *outCamMgr = camMgr;
+    return YES;
+}
+
 - (void)updateSnapshot:(RemoteCall *)remoteCall {
     if (!remoteCall || self.binaryBase == 0) {
         @synchronized(self) {
@@ -396,6 +573,7 @@ NS_ASSUME_NONNULL_BEGIN
     // 1. Resolve GameFacade static fields
     uintptr_t staticFields = [self resolveGameFacadeStaticFields:remoteCall];
     if (!validOffsetPtr(staticFields)) {
+        [self reportStage:@"stage 1/6: GameFacade static fields not resolved"];
         @synchronized(self) {
             self.hasValidFrame = NO;
         }
@@ -403,11 +581,50 @@ NS_ASSUME_NONNULL_BEGIN
     }
 
     // 2. Read CurrentMatchGame
-    // In match, CurrentMatchGame is at staticFields + 0x08.
-    // In lobby, CurrentMatchGame is NULL (0x0). Do NOT fall back to CurrentGame (which is LobbyGame).
+    // In match, CurrentMatchGame sits at the static field discovered above.
+    // In lobby, CurrentMatchGame is NULL (0x0). Do NOT fall back to CurrentGame
+    // (which is LobbyGame).
+    uint64_t matchGameOffset = gFreeFireMatchGameFieldOffset != 0
+                                   ? gFreeFireMatchGameFieldOffset
+                                   : kGameFacadeStatic_CurrentMatchGame;
     uintptr_t currentMatchGame = ReadMemorySafe<uintptr_t>(
-        remoteCall, staticFields + kGameFacadeStatic_CurrentMatchGame);
+        remoteCall, staticFields + matchGameOffset);
+
+    char matchGameClass[64] = {0};
+    BOOL hasMatchGameClass =
+        ReadIl2CppClassName(remoteCall, currentMatchGame, matchGameClass,
+                            sizeof(matchGameClass));
+    if (hasMatchGameClass && strstr(matchGameClass, "MatchGame") == NULL) {
+        // The dump offset points at another object in this build; repair it with
+        // the field that verifiably holds a MatchGame reference. When nothing
+        // verifies (renamed classes) the dump offset is kept, so behaviour never
+        // gets worse than a plain offset read.
+        uint64_t discovered = 0;
+        if ([self discoveryDue]) {
+            discovered = FindIl2CppFieldMatching(
+                remoteCall, staticFields, 0x100, FieldHoldsMatchGame);
+        }
+
+        if (discovered != 0) {
+            matchGameOffset = discovered;
+            gFreeFireMatchGameFieldOffset = discovered;
+            currentMatchGame = ReadMemorySafe<uintptr_t>(
+                remoteCall, staticFields + discovered);
+            [self reportDiagnostics:
+                      [NSString stringWithFormat:
+                                    @"MatchGame field repaired to 0x%llx",
+                                    (unsigned long long)discovered]];
+        } else {
+            [self reportStage:
+                      [NSString stringWithFormat:@"stage 2/6: field 0x%llx "
+                                                 @"holds '%s', not MatchGame",
+                                                 (unsigned long long)matchGameOffset,
+                                                 matchGameClass]];
+        }
+    }
+
     if (!validOffsetPtr(currentMatchGame)) {
+        [self reportStage:@"stage 2/6: no CurrentMatchGame (lobby)"];
         @synchronized(self) {
             self.hasValidFrame = NO;
             [self clearOverlayTargets];
@@ -416,23 +633,13 @@ NS_ASSUME_NONNULL_BEGIN
     }
 
     // 3. Resolve Camera and ViewProjection Matrix (100% PURE MEMORY READ)
-    uintptr_t camMgr = ReadMemorySafe<uintptr_t>(
-        remoteCall, currentMatchGame + kMatchGame_CameraControllerManager);
-    if (!validOffsetPtr(camMgr)) {
-        @synchronized(self) {
-            self.hasValidFrame = NO;
-            [self clearOverlayTargets];
-        }
-        return;
-    }
-
-    uintptr_t camera = ReadMemorySafe<uintptr_t>(
-        remoteCall, camMgr + kCameraControllerManager_MainCamera);
-    if (!validOffsetPtr(camera)) {
-        camera = ReadMemorySafe<uintptr_t>(
-            remoteCall, camMgr + kCameraControllerManager_SubCamera);
-    }
-    if (!validOffsetPtr(camera)) {
+    uintptr_t camMgr = 0;
+    uintptr_t camera = 0;
+    if (![self resolveCamera:remoteCall
+                   matchGame:currentMatchGame
+                      camera:&camera
+                      camMgr:&camMgr]) {
+        [self reportStage:@"stage 3/6: camera not found"];
         @synchronized(self) {
             self.hasValidFrame = NO;
             [self clearOverlayTargets];
@@ -443,6 +650,10 @@ NS_ASSUME_NONNULL_BEGIN
     float viewProjection[16] = {};
     float viewMatrix[16] = {};
     if (!ReadCameraVPAndWorldMatrix(remoteCall, camera, viewProjection, viewMatrix)) {
+        [self reportStage:
+                  [NSString stringWithFormat:@"stage 4/6: camera matrices "
+                                             @"unreadable (cam=0x%lx)",
+                                             (unsigned long)camera]];
         @synchronized(self) {
             self.hasValidFrame = NO;
             [self clearOverlayTargets];
@@ -459,9 +670,27 @@ NS_ASSUME_NONNULL_BEGIN
     uint32_t hostTeamID = 0;
 
     // 4. Read Entities from MatchGame.m_ReplicationEntitis
+    uint64_t entitiesOffset = gFreeFireEntitiesFieldOffset != 0
+                                  ? gFreeFireEntitiesFieldOffset
+                                  : kMatchGame_ReplicationEntities;
     uintptr_t repDict = ReadMemorySafe<uintptr_t>(
-        remoteCall, currentMatchGame + kMatchGame_ReplicationEntities);
+        remoteCall, currentMatchGame + entitiesOffset);
+    if (!IsDictionaryObject(remoteCall, repDict) && [self discoveryDue]) {
+        uint64_t discovered = FindIl2CppFieldMatching(
+            remoteCall, currentMatchGame, 0x300, LooksLikePlayerDictionary);
+        if (discovered != 0) {
+            entitiesOffset = discovered;
+            gFreeFireEntitiesFieldOffset = discovered;
+            repDict = ReadMemorySafe<uintptr_t>(
+                remoteCall, currentMatchGame + discovered);
+        }
+    }
     if (!validOffsetPtr(repDict)) {
+        [self reportStage:
+                  [NSString stringWithFormat:@"stage 5/6: replication "
+                                             @"dictionary missing (field "
+                                             @"0x%llx)",
+                                             (unsigned long long)entitiesOffset]];
         @synchronized(self) {
             self.hasValidFrame = NO;
         }
@@ -471,6 +700,10 @@ NS_ASSUME_NONNULL_BEGIN
     int32_t dictCount =
         ReadMemorySafe<int32_t>(remoteCall, repDict + kDictionary_Count);
     if (dictCount <= 0 || dictCount > 200) {
+        [self reportStage:
+                  [NSString stringWithFormat:@"stage 5/6: dictionary count "
+                                             @"%d out of range",
+                                             (int)dictCount]];
         @synchronized(self) {
             self.hasValidFrame = NO;
         }
@@ -480,6 +713,7 @@ NS_ASSUME_NONNULL_BEGIN
     uintptr_t entriesArray =
         ReadMemorySafe<uintptr_t>(remoteCall, repDict + kDictionary_Entries);
     if (!validOffsetPtr(entriesArray)) {
+        [self reportStage:@"stage 5/6: dictionary entries unreadable"];
         @synchronized(self) {
             self.hasValidFrame = NO;
         }
@@ -525,6 +759,15 @@ NS_ASSUME_NONNULL_BEGIN
     NSMutableArray<FreeFireEntitySnapshot *> *entities =
         [NSMutableArray array];
 
+    NSUInteger scannedCount = 0;
+    NSUInteger nonPlayerCount = 0;
+    NSUInteger deadSkipped = 0;
+    NSUInteger teamSkipped = 0;
+    NSUInteger positionFailures = 0;
+    NSUInteger projectionFailures = 0;
+    NSUInteger projectedCount = 0;
+    std::string sampleClasses;
+
     for (int32_t i = 0; i < loopLimit; ++i) {
         uintptr_t entryAddr =
             entriesArray + kArray_Vector + (uint64_t)i * kEntry_Size;
@@ -537,6 +780,8 @@ NS_ASSUME_NONNULL_BEGIN
             ReadMemorySafe<uintptr_t>(remoteCall, entryAddr + kEntry_Value);
         if (!validOffsetPtr(entity))
             continue;
+
+        ++scannedCount;
 
         // Skip local player
         if (localUserID != 0) {
@@ -562,25 +807,40 @@ NS_ASSUME_NONNULL_BEGIN
                                size:sizeof(className) - 1])
             continue;
 
-        if (strncmp(className, "Player", 6) != 0)
+        if (sampleClasses.size() < 96 &&
+            sampleClasses.find(className) == std::string::npos) {
+            if (!sampleClasses.empty())
+                sampleClasses += ",";
+            sampleClasses += className;
+        }
+
+        if (strncmp(className, "Player", 6) != 0) {
+            ++nonPlayerCount;
             continue;
+        }
 
         // Check Dead State
         uint8_t isDead = ReadMemorySafe<uint8_t>(
             remoteCall, entity + kAttackableEntity_IsDeadFlag);
-        if (isDead != 0)
+        if (isDead != 0) {
+            ++deadSkipped;
             continue;
+        }
 
         // Check Team (skip teammates)
         uint32_t teamID =
             ReadMemorySafe<uint32_t>(remoteCall, entity + kPlayer_TeamModeID);
-        if (hostTeamID != 0 && teamID == hostTeamID)
+        if (hostTeamID != 0 && teamID == hostTeamID) {
+            ++teamSkipped;
             continue;
+        }
 
         // Read Position using Pure Memory Reads
         Vector3 pos = Vector3::zero();
-        if (!ReadEntityPosition(remoteCall, entity, &pos))
+        if (!ReadEntityPosition(remoteCall, entity, &pos)) {
+            ++positionFailures;
             continue;
+        }
 
         // Read Name
         uintptr_t nameStr = ReadMemorySafe<uintptr_t>(
@@ -603,8 +863,12 @@ NS_ASSUME_NONNULL_BEGIN
 
         BOOL visible = ProjectToOverlayPoint(pos, viewProjection, sw, sh,
                                              &screenX, &screenY);
-        if (!visible)
+        if (!visible) {
+            ++projectionFailures;
             continue;
+        }
+
+        ++projectedCount;
 
         BOOL headVisible = ProjectToOverlayPoint(headWorld, viewProjection,
                                                 sw, sh, &headSX, &headSY);
@@ -646,6 +910,31 @@ NS_ASSUME_NONNULL_BEGIN
         self.entitySnapshots = [entities copy];
         self.hasValidFrame = YES;
         [self showOverlay:remoteCall];
+    }
+
+    // A frame went through, so the next failure is reported again.
+    [self reportStage:@""];
+
+    if ([self diagnosticsDue]) {
+        char classes[128] = {0};
+        strncpy(classes, sampleClasses.c_str(), sizeof(classes) - 1);
+        [self
+            reportDiagnostics:
+                [NSString
+                    stringWithFormat:@"ok: camMgr=0x%lx cam=0x%lx dict=0x%lx "
+                                     @"count=%d scanned=%lu nonPlayer=%lu "
+                                     @"dead=%lu team=%lu noPos=%lu noProj=%lu "
+                                     @"projected=%lu classes=[%s]",
+                                     (unsigned long)camMgr,
+                                     (unsigned long)camera,
+                                     (unsigned long)repDict, (int)dictCount,
+                                     (unsigned long)scannedCount,
+                                     (unsigned long)nonPlayerCount,
+                                     (unsigned long)deadSkipped,
+                                     (unsigned long)teamSkipped,
+                                     (unsigned long)positionFailures,
+                                     (unsigned long)projectionFailures,
+                                     (unsigned long)projectedCount, classes]];
     }
 }
 

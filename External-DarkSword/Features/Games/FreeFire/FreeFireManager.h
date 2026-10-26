@@ -19,6 +19,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, assign) BOOL showsName;
 @property(nonatomic, assign) BOOL showsDistance;
 @property(nonatomic, readonly) BOOL hasValidFrame;
+@property(nonatomic, copy, nullable) void (^diagnosticsHandler)(NSString *message);
 
 - (instancetype)initWithRemoteCall:(RemoteCall *)remoteCall;
 

@@ -752,6 +752,9 @@ final class DarkSwordManager: ObservableObject {
                         self.freeFireStatus = "Connected to \(process)"
                         self.isOpeningFreeFire = false
                         self.syncFreeFireESPOptions()
+                        manager.diagnosticsHandler = { [weak self] message in
+                            self?.appendDiagnostics(message)
+                        }
                         manager.runLoop()
                     } else {
                         self.aovStatus = "Connected to \(process)"
@@ -1922,6 +1925,30 @@ final class DarkSwordManager: ObservableObject {
             return false
         }
         return true
+    }
+
+    /// Free Fire ESP diagnostics stay visible in the Log screen even when the
+    /// debug build flag is off, so an on-device run can be diagnosed.
+    private func appendDiagnostics(_ line: String) {
+        let trimmed = line.trimmingCharacters(in: .newlines)
+        guard !trimmed.isEmpty else { return }
+
+        DispatchQueue.main.async {
+            logSwift("[FreeFire] \(trimmed)")
+            if self.logText.isEmpty {
+                self.logText = "[FreeFire] \(trimmed)"
+            } else {
+                self.logText += "\n[FreeFire] \(trimmed)"
+            }
+
+            let lines = self.logText.split(
+                separator: "\n",
+                omittingEmptySubsequences: false
+            )
+            if lines.count > 400 {
+                self.logText = lines.suffix(300).joined(separator: "\n")
+            }
+        }
     }
 
     private func appendLog(_ line: String) {
