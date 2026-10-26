@@ -20,9 +20,13 @@ typedef uint64_t RemoteObjectRef;
 @property(nonatomic, assign, readonly) CGFloat cachedScreenWidth;
 @property(nonatomic, assign, readonly) CGFloat cachedScreenHeight;
 @property(nonatomic, assign, readonly) BOOL isOverlayReady;
+@property(nonatomic, assign, readonly) BOOL isSpringBoard;
 
 - (instancetype)initWithRemoteCall:(RemoteCall *)remoteCall;
+- (instancetype)initWithRemoteCall:(RemoteCall *)remoteCall
+                     isSpringBoard:(BOOL)isSpringBoard;
 - (BOOL)setupBaseOverlay;
+- (void)teardownOverlay;
 - (BOOL)updateOverlayTargets:(NSArray<NSDictionary *> *)targets;
 - (BOOL)clearTargets;
 - (void)setOverlayMenuVisible:(BOOL)visible;

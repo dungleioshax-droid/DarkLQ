@@ -35,6 +35,7 @@ static CGFloat OverlayClamp(CGFloat value, CGFloat lower, CGFloat upper) {
 @interface RemoteWebViewOverlay ()
 
 @property(nonatomic, assign, readwrite) RemoteCall *remoteCall;
+@property(nonatomic, assign, readwrite) BOOL isSpringBoard;
 @property(nonatomic, assign, readwrite) RemoteObjectRef window;
 @property(nonatomic, assign, readwrite) RemoteObjectRef parentView;
 @property(nonatomic, assign, readwrite) RemoteObjectRef webView;
@@ -55,9 +56,15 @@ static CGFloat OverlayClamp(CGFloat value, CGFloat lower, CGFloat upper) {
 #pragma mark - Init
 
 - (instancetype)initWithRemoteCall:(RemoteCall *)remoteCall {
+    return [self initWithRemoteCall:remoteCall isSpringBoard:NO];
+}
+
+- (instancetype)initWithRemoteCall:(RemoteCall *)remoteCall
+                     isSpringBoard:(BOOL)isSpringBoard {
     self = [super init];
     if (self) {
         _remoteCall = remoteCall;
+        _isSpringBoard = isSpringBoard;
         _window = 0;
         _parentView = 0;
         _webView = 0;
@@ -376,6 +383,12 @@ static CGFloat OverlayClamp(CGFloat value, CGFloat lower, CGFloat upper) {
 }
 
 - (BOOL)refreshWindowBounds {
+    if (self.isSpringBoard) {
+        self.cachedScreenWidth = MAX(kWidth, kHeight);
+        self.cachedScreenHeight = MIN(kWidth, kHeight);
+        return YES;
+    }
+
     uint64_t selector = [self getSelector:"bounds"];
     if (!selector || !self.window) {
         self.cachedScreenWidth = MAX(kWidth, kHeight);
@@ -391,6 +404,165 @@ static CGFloat OverlayClamp(CGFloat value, CGFloat lower, CGFloat upper) {
         self.cachedScreenWidth = MAX(kWidth, kHeight);
         self.cachedScreenHeight = MIN(kWidth, kHeight);
     }
+    return YES;
+}
+
+- (BOOL)ensureWebKitLoaded {
+    RemoteObjectRef wkConfigClass = [self getClass:"WKWebViewConfiguration"];
+    if (wkConfigClass) {
+        return YES;
+    }
+
+    LOG(@"[RemoteWebViewOverlay] WKWebViewConfiguration not found, loading WebKit.framework...");
+    RemoteObjectRef bundleClass = [self getClass:"NSBundle"];
+    if (bundleClass) {
+        uint64_t bundlePath = remote_NSString(self.remoteCall, "/System/Library/Frameworks/WebKit.framework");
+        if (bundlePath) {
+            RemoteObjectRef bundle = [self call:bundleClass selector:"bundleWithPath:" argument:bundlePath];
+            if (bundle) {
+                [self call:bundle selector:"load"];
+                wkConfigClass = [self getClass:"WKWebViewConfiguration"];
+            }
+        }
+    }
+    return wkConfigClass != 0;
+}
+
+- (BOOL)setupSpringBoardOverlayWindow {
+    LOG(@"[RemoteWebViewOverlay] Setting up SpringBoard overlay window...");
+
+    // Determine landscape screen dimensions
+    CGFloat w = MAX(kWidth, kHeight);
+    CGFloat h = MIN(kWidth, kHeight);
+
+    RemoteObjectRef uiScreenClass = [self getClass:"UIScreen"];
+    if (uiScreenClass) {
+        RemoteObjectRef mainScreen = [self call:uiScreenClass selector:"mainScreen"];
+        if (mainScreen) {
+            uint64_t boundsSEL = [self getSelector:"bounds"];
+            if (boundsSEL) {
+                CGRect screenBounds = remote_getCGRect(self.remoteCall, mainScreen, boundsSEL);
+                if (screenBounds.size.width > 0.0 && screenBounds.size.height > 0.0) {
+                    w = MAX(screenBounds.size.width, screenBounds.size.height);
+                    h = MIN(screenBounds.size.width, screenBounds.size.height);
+                }
+            }
+        }
+    }
+    self.cachedScreenWidth = w;
+    self.cachedScreenHeight = h;
+    LOG(@"[RemoteWebViewOverlay] SpringBoard target bounds: %.0fx%.0f", w, h);
+
+    // 1. Resolve mainWindowScene from SBMainWorkspace (standard in SpringBoard)
+    RemoteObjectRef workspaceClass = [self getClass:"SBMainWorkspace"];
+    RemoteObjectRef windowScene = 0;
+    if (workspaceClass) {
+        RemoteObjectRef workspace = [self call:workspaceClass selector:"sharedInstance"];
+        if (workspace) {
+            windowScene = [self call:workspace selector:"mainWindowScene"];
+            LOG(@"[RemoteWebViewOverlay] SBMainWorkspace mainWindowScene = 0x%llx", windowScene);
+        }
+    }
+
+    // Fallback: search connectedScenes
+    if (!windowScene) {
+        RemoteObjectRef uiAppClass = [self getClass:"UIApplication"];
+        if (uiAppClass) {
+            RemoteObjectRef app = [self call:uiAppClass selector:"sharedApplication"];
+            if (app) {
+                RemoteObjectRef connectedScenes = [self call:app selector:"connectedScenes"];
+                if (connectedScenes) {
+                    RemoteObjectRef scenes = [self call:connectedScenes selector:"allObjects"];
+                    if (scenes) {
+                        NSUInteger count = (NSUInteger)[self call:scenes selector:"count"];
+                        uint64_t objectAtIndexSEL = [self getSelector:"objectAtIndex:"];
+                        for (NSUInteger i = 0; i < count; i++) {
+                            RemoteObjectRef s = remote_msg(self.remoteCall, scenes, objectAtIndexSEL, i, 0, 0, 0);
+                            if (s) {
+                                windowScene = s;
+                                LOG(@"[RemoteWebViewOverlay] Found windowScene via connectedScenes = 0x%llx", s);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Resolve SBFTouchPassThroughWindow (or load SpringBoardFoundation.framework)
+    RemoteObjectRef windowClass = [self getClass:"SBFTouchPassThroughWindow"];
+    if (!windowClass) {
+        RemoteObjectRef bundleClass = [self getClass:"NSBundle"];
+        if (bundleClass) {
+            uint64_t bundlePath = remote_NSString(self.remoteCall, "/System/Library/PrivateFrameworks/SpringBoardFoundation.framework");
+            if (bundlePath) {
+                RemoteObjectRef bundle = [self call:bundleClass selector:"bundleWithPath:" argument:bundlePath];
+                if (bundle) {
+                    [self call:bundle selector:"load"];
+                    windowClass = [self getClass:"SBFTouchPassThroughWindow"];
+                }
+            }
+        }
+    }
+    if (!windowClass) {
+        LOG(@"[RemoteWebViewOverlay] SBFTouchPassThroughWindow not found; falling back to UIWindow");
+        windowClass = [self getClass:"UIWindow"];
+    }
+    if (!windowClass) {
+        LOG(@"[RemoteWebViewOverlay] No window class found in SpringBoard");
+        return NO;
+    }
+
+    // 3. Allocate and initialize window
+    RemoteObjectRef allocWindow = [self call:windowClass selector:"alloc"];
+    if (!allocWindow) {
+        LOG(@"[RemoteWebViewOverlay] Failed to alloc window in SpringBoard");
+        return NO;
+    }
+
+    RemoteObjectRef window = remote_msg_on_main_thread(
+        self.remoteCall, allocWindow, [self getSelector:"init"], NULL, NULL, 0);
+    if (!window) {
+        LOG(@"[RemoteWebViewOverlay] Failed to init window in SpringBoard");
+        return NO;
+    }
+
+    // 4. Configure frame
+    CGRect frame = CGRectMake(0, 0, self.cachedScreenWidth, self.cachedScreenHeight);
+    const void *frameParams[] = {&frame};
+    size_t frameSizes[] = {sizeof(frame)};
+    remote_msg_on_main_thread(self.remoteCall, window, [self getSelector:"setFrame:"],
+                              frameParams, frameSizes, 1);
+
+    // 5. Attach to windowScene if available
+    if (windowScene) {
+        const void *sceneParams[] = {&windowScene};
+        size_t sceneSizes[] = {sizeof(windowScene)};
+        remote_msg_on_main_thread(self.remoteCall, window, [self getSelector:"setWindowScene:"],
+                                  sceneParams, sceneSizes, 1);
+    }
+
+    // 6. Set windowLevel to 10000010.0 (high level above running apps & SpringBoard UI)
+    CGFloat windowLevel = 10000010.0;
+    const void *levelParams[] = {&windowLevel};
+    size_t levelSizes[] = {sizeof(windowLevel)};
+    remote_msg_on_main_thread(self.remoteCall, window, [self getSelector:"setWindowLevel:"],
+                              levelParams, levelSizes, 1);
+
+    // 7. Make transparent & non-opaque
+    [self makeWebViewTransparent:window];
+
+    // 8. Set userInteractionEnabled = YES (SBFTouchPassThroughWindow allows empty touches to pass through)
+    [self setView:window boolValue:YES selector:"setUserInteractionEnabled:"];
+
+    // 9. Make visible
+    [self setView:window boolValue:NO selector:"setHidden:"];
+
+    self.window = window;
+    self.parentView = window;
+    LOG(@"[RemoteWebViewOverlay] SpringBoard overlay window ready: 0x%llx (%.0fx%.0f, level=%.0f)",
+        window, self.cachedScreenWidth, self.cachedScreenHeight, windowLevel);
     return YES;
 }
 
@@ -443,17 +615,39 @@ static CGFloat OverlayClamp(CGFloat value, CGFloat lower, CGFloat upper) {
         return YES;
     }
 
-    LOG(@"[RemoteWebViewOverlay] Setting up base overlay...");
+    LOG(@"[RemoteWebViewOverlay] Setting up base overlay (%s)...",
+        self.isSpringBoard ? "SpringBoard" : "Internal");
 
-    if (![self findTargetWindow]) {
-        LOG(@"[RemoteWebViewOverlay] setupBaseOverlay: findTargetWindow "
-            @"failed");
-        return NO;
-    }
+    if (self.isSpringBoard) {
+        if (![self setupSpringBoardOverlayWindow]) {
+            LOG(@"[RemoteWebViewOverlay] setupSpringBoardOverlayWindow failed");
+            return NO;
+        }
+    } else {
+        if (![self findTargetWindow]) {
+            LOG(@"[RemoteWebViewOverlay] setupBaseOverlay: findTargetWindow failed");
+            return NO;
+        }
 
-    if (![self findParentView]) {
-        LOG(@"[RemoteWebViewOverlay] setupBaseOverlay: findParentView failed");
-        return NO;
+        if (![self findParentView]) {
+            LOG(@"[RemoteWebViewOverlay] setupBaseOverlay: findParentView failed");
+            return NO;
+        }
+
+        uint64_t boundsSEL = [self getSelector:"bounds"];
+        if (boundsSEL && self.window) {
+            CGRect gameBounds =
+                remote_getCGRect(self.remoteCall, self.window, boundsSEL);
+            self.cachedScreenWidth = (gameBounds.size.width > 0.0) ? gameBounds.size.width : MAX(kWidth, kHeight);
+            self.cachedScreenHeight = (gameBounds.size.height > 0.0) ? gameBounds.size.height : MIN(kWidth, kHeight);
+            LOG(@"[RemoteWebViewOverlay] Game UIWindow bounds: %.0fx%.0f",
+                self.cachedScreenWidth, self.cachedScreenHeight);
+        } else {
+            self.cachedScreenWidth = MAX(kWidth, kHeight);
+            self.cachedScreenHeight = MIN(kWidth, kHeight);
+            LOG(@"[RemoteWebViewOverlay] Fallback UIScreen: %.0fx%.0f",
+                self.cachedScreenWidth, self.cachedScreenHeight);
+        }
     }
 
     if (![[OverlayWebSocketServer sharedServer] start]) {
@@ -461,41 +655,12 @@ static CGFloat OverlayClamp(CGFloat value, CGFloat lower, CGFloat upper) {
         return NO;
     }
 
-    uint64_t boundsSEL = [self getSelector:"bounds"];
-    if (boundsSEL && self.window) {
-        CGRect gameBounds =
-            remote_getCGRect(self.remoteCall, self.window, boundsSEL);
-        self.cachedScreenWidth = (gameBounds.size.width > 0.0) ? gameBounds.size.width : MAX(kWidth, kHeight);
-        self.cachedScreenHeight = (gameBounds.size.height > 0.0) ? gameBounds.size.height : MIN(kWidth, kHeight);
-        LOG(@"[RemoteWebViewOverlay] Game UIWindow bounds: %.0fx%.0f",
-            self.cachedScreenWidth, self.cachedScreenHeight);
-    } else {
-        self.cachedScreenWidth = MAX(kWidth, kHeight);
-        self.cachedScreenHeight = MIN(kWidth, kHeight);
-        LOG(@"[RemoteWebViewOverlay] Fallback UIScreen: %.0fx%.0f",
-            self.cachedScreenWidth, self.cachedScreenHeight);
-    }
-
-    RemoteObjectRef wkConfigClass = [self getClass:"WKWebViewConfiguration"];
-    if (!wkConfigClass) {
-        LOG(@"[RemoteWebViewOverlay] WKWebViewConfiguration not found, loading WebKit.framework...");
-        RemoteObjectRef bundleClass = [self getClass:"NSBundle"];
-        if (bundleClass) {
-            uint64_t bundlePath = remote_NSString(self.remoteCall, "/System/Library/Frameworks/WebKit.framework");
-            if (bundlePath) {
-                RemoteObjectRef bundle = [self call:bundleClass selector:"bundleWithPath:" argument:bundlePath];
-                if (bundle) {
-                    [self call:bundle selector:"load"];
-                    wkConfigClass = [self getClass:"WKWebViewConfiguration"];
-                }
-            }
-        }
-    }
-    if (!wkConfigClass) {
+    if (![self ensureWebKitLoaded]) {
         LOG(@"[RemoteWebViewOverlay] WKWebViewConfiguration class not found");
         return NO;
     }
 
+    RemoteObjectRef wkConfigClass = [self getClass:"WKWebViewConfiguration"];
     RemoteObjectRef allocConfig = [self call:wkConfigClass selector:"alloc"];
     if (!allocConfig) {
         LOG(@"[RemoteWebViewOverlay] WKWebViewConfiguration alloc failed");
@@ -816,6 +981,46 @@ static CGFloat OverlayClamp(CGFloat value, CGFloat lower, CGFloat upper) {
     [[OverlayWebSocketServer sharedServer] broadcastText:@"[]"];
     LOG(@"[RemoteWebViewOverlay] Targets cleared");
     return YES;
+}
+
+#pragma mark - Teardown
+
+- (void)teardownOverlay {
+    if (!self.isOverlayReady || !self.remoteCall)
+        return;
+
+    LOG(@"[RemoteWebViewOverlay] Tearing down overlay (%s)...",
+        self.isSpringBoard ? "SpringBoard" : "Internal");
+
+    uint64_t removeSEL = [self getSelector:"removeFromSuperview"];
+    if (removeSEL) {
+        if (self.floatButtonWebView) {
+            remote_msg_on_main_thread(self.remoteCall, self.floatButtonWebView,
+                                      removeSEL, NULL, NULL, 0);
+            self.floatButtonWebView = 0;
+        }
+        if (self.menuWebView) {
+            remote_msg_on_main_thread(self.remoteCall, self.menuWebView,
+                                      removeSEL, NULL, NULL, 0);
+            self.menuWebView = 0;
+        }
+        if (self.webView) {
+            remote_msg_on_main_thread(self.remoteCall, self.webView,
+                                      removeSEL, NULL, NULL, 0);
+            self.webView = 0;
+        }
+    }
+
+    if (self.window) {
+        if (self.isSpringBoard) {
+            [self setView:self.window boolValue:YES selector:"setHidden:"];
+        }
+        self.window = 0;
+        self.parentView = 0;
+    }
+
+    self.isOverlayReady = NO;
+    self.menuVisible = NO;
 }
 
 @end

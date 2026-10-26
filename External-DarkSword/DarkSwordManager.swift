@@ -151,6 +151,7 @@ final class DarkSwordManager: ObservableObject {
         static let aovShowsName = "aov.esp.showsName"
         static let aovShowsDistance = "aov.esp.showsDistance"
         static let aovCameraHeight = "aov.camera.height"
+        static let aovRenderMode = "aov.render.mode"
         static let freeFireProcess = "freefire.process"
         static let freeFireESPEnabled = "freefire.esp.enabled"
         static let freeFireShowsLine = "freefire.esp.showsLine"
@@ -172,6 +173,7 @@ final class DarkSwordManager: ObservableObject {
         static let aovShowsName = false
         static let aovShowsDistance = false
         static let aovCameraHeight = 1.0
+        static let aovRenderMode = "springboard"
         static let freeFireProcess = "FreeFire"
         static let freeFireESPEnabled = false
         static let freeFireShowsLine = false
@@ -254,6 +256,17 @@ final class DarkSwordManager: ObservableObject {
     @Published var aovScanResult = "-"
     @Published var aovProbeResult = "-"
     @Published var aovStatus = "Idle"
+    @Published var aovRenderMode = AppUserDefaults.string(
+        forKey: DefaultsKey.aovRenderMode,
+        fallbackValue: DefaultsFallback.aovRenderMode
+    ) {
+        didSet {
+            AppUserDefaults.setString(
+                aovRenderMode,
+                forKey: DefaultsKey.aovRenderMode
+            )
+        }
+    }
 
     @Published var aovESPEnabled = AppUserDefaults.bool(
         forKey: DefaultsKey.aovESPEnabled,
@@ -526,6 +539,7 @@ final class DarkSwordManager: ObservableObject {
     }
 
     private var remoteCall: RemoteCall?
+    private var springboardRemoteCall: RemoteCall?
     private var aovManager: AoVManager?
     private var freeFireManager: FreeFireManager?
     private let workerQueue = DispatchQueue(
@@ -537,6 +551,31 @@ final class DarkSwordManager: ObservableObject {
     private static var isKernelRunClaimed = false
     private static let offsetsLock = NSLock()
     private static var sharedOffsetsInitialized = false
+
+    private func ensureSpringBoardRemoteCall() -> RemoteCall? {
+        if let existing = springboardRemoteCall, existing.trojanMem != 0 {
+            return existing
+        }
+
+        let mig = useMigFilterBypass
+        DispatchQueue.main.async {
+            self.appendLog("Connecting RemoteCall to SpringBoard for external overlay...")
+        }
+        let sbInstance = RemoteCall(process: "SpringBoard", useMigFilterBypass: mig)
+        if let sbInstance, sbInstance.trojanMem != 0 {
+            springboardRemoteCall = sbInstance
+            DispatchQueue.main.async {
+                self.appendLog("RemoteCall connected to SpringBoard (pid=\(sbInstance.pid)).")
+            }
+            return sbInstance
+        } else {
+            let error = RemoteCall.lastInitError() ?? "unknown error"
+            DispatchQueue.main.async {
+                self.appendLog("SpringBoard RemoteCall connection warning: \(error).")
+            }
+            return nil
+        }
+    }
 
     init() {
         DarkSwordManager.activeManager = self
@@ -577,6 +616,9 @@ final class DarkSwordManager: ObservableObject {
     deinit {
         if remoteCall != nil {
             _ = remoteCall?.destroy()
+        }
+        if springboardRemoteCall != nil {
+            _ = springboardRemoteCall?.destroy()
         }
     }
 
@@ -678,18 +720,34 @@ final class DarkSwordManager: ObservableObject {
         workerQueue.async { [weak self] in
             guard let self else { return }
 
+            let isAoVProcess =
+                process
+                == self.aovProcess.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+            let isFreeFireProcess =
+                process
+                == self.resolvedFreeFireProcessName()
+                || process.lowercased().contains("freefire")
+
+            var sbInstance: RemoteCall? = nil
+            if isAoVProcess && self.aovRenderMode == "springboard" {
+                DispatchQueue.main.async {
+                    self.aovStatus = "Connecting SpringBoard..."
+                }
+                sbInstance = self.ensureSpringBoardRemoteCall()
+                if sbInstance == nil {
+                    DispatchQueue.main.async {
+                        self.appendLog(
+                            "Warning: SpringBoard RemoteCall unavailable; falling back to internal overlay if needed."
+                        )
+                    }
+                }
+            }
+
             let kaddr = process.withCString { procbyname($0) }
             if kaddr == 0 {
                 DispatchQueue.main.async {
-                    let isAoVProcess =
-                        process
-                        == self.aovProcess.trimmingCharacters(
-                            in: .whitespacesAndNewlines
-                        )
-                    let isFreeFireProcess =
-                        process
-                        == self.resolvedFreeFireProcessName()
-                        || process.lowercased().contains("freefire")
                     self.remoteCall = nil
                     self.remoteConnected = false
                     self.connectedProcess = ""
@@ -726,15 +784,6 @@ final class DarkSwordManager: ObservableObject {
             let connected = instance != nil && error.isEmpty
 
             DispatchQueue.main.async {
-                let isAoVProcess =
-                    process
-                    == self.aovProcess.trimmingCharacters(
-                        in: .whitespacesAndNewlines
-                    )
-                let isFreeFireProcess =
-                    process
-                    == self.resolvedFreeFireProcessName()
-                    || process.lowercased().contains("freefire")
                 self.remoteCall = connected ? instance : nil
                 self.remoteConnected = connected
                 self.connectedProcess = connected ? process : ""
@@ -746,9 +795,13 @@ final class DarkSwordManager: ObservableObject {
 
                 if connected {
                     if let instance, isAoVProcess {
-                        let manager = AoVManager(remoteCall: instance)
+                        let manager = AoVManager(
+                            remoteCall: instance,
+                            overlayRemoteCall: sbInstance
+                        )
                         self.aovManager = manager
-                        self.aovStatus = "Connected to \(process)"
+                        let modeDesc = (sbInstance != nil) ? "External SpringBoard" : "Internal"
+                        self.aovStatus = "Connected to \(process) (\(modeDesc))"
                         self.isOpeningAoV = false
                         self.syncAoVESPOptions()
                         manager.runLoop()
@@ -802,10 +855,15 @@ final class DarkSwordManager: ObservableObject {
             guard let self else { return }
             usleep(50_000)
             let result = remoteCall.destroy()
+            if let sb = self.springboardRemoteCall {
+                _ = sb.destroy()
+                self.springboardRemoteCall = nil
+            }
             DispatchQueue.main.async {
                 self.aovManager = nil
                 self.freeFireManager = nil
                 self.remoteCall = nil
+                self.springboardRemoteCall = nil
                 self.remoteConnected = false
                 self.connectedProcess = ""
                 self.isOpeningAoV = false
@@ -1059,10 +1117,15 @@ final class DarkSwordManager: ObservableObject {
             guard let self else { return }
             usleep(50_000)
             let result = remoteCall.destroy()
+            if let sb = self.springboardRemoteCall {
+                _ = sb.destroy()
+                self.springboardRemoteCall = nil
+            }
             DispatchQueue.main.async {
                 self.aovManager = nil
                 self.freeFireManager = nil
                 self.remoteCall = nil
+                self.springboardRemoteCall = nil
                 self.remoteConnected = false
                 self.connectedProcess = ""
                 self.appendLog("RemoteCall destroy result: \(result).")
@@ -1506,6 +1569,12 @@ final class DarkSwordManager: ObservableObject {
             guard let bool = boolValue(value) else { return false }
             aovHackMapEnabled = bool
             return true
+        case "aovRenderMode", "renderMode":
+            if let str = value as? String, !str.isEmpty {
+                aovRenderMode = str.lowercased()
+                return true
+            }
+            return false
         case "hackMapEnabled", "hackMap", "map":
             guard game != "freefire", let bool = boolValue(value),
                 bool != aovHackMapEnabled
@@ -1663,6 +1732,7 @@ final class DarkSwordManager: ObservableObject {
             "cameraHeight": aovCameraHeight,
             "cameraHeightMin": Self.aovCameraHeightMinValue,
             "cameraHeightMax": Self.aovCameraHeightMaxValue,
+            "aovRenderMode": aovRenderMode,
             "aovESPEnabled": aovESPEnabled,
             "aovShowsLine": aovShowsLine,
             "aovShowsBox": aovShowsBox,

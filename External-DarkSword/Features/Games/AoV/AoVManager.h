@@ -13,6 +13,8 @@ NS_ASSUME_NONNULL_BEGIN
 @interface AoVManager : NSObject
 
 @property(nonatomic, strong) RemoteCall *remoteCall;
+@property(nonatomic, strong, nullable) RemoteCall *overlayRemoteCall;
+@property(nonatomic, assign) BOOL useSpringBoardOverlay;
 @property(nonatomic, assign) uintptr_t cameraSystem;
 @property(nonatomic, assign) uintptr_t actorManager;
 @property(nonatomic, assign) double cameraHeight;
@@ -26,6 +28,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, readonly) BOOL hasValidFrame;
 
 - (instancetype)initWithRemoteCall:(RemoteCall *)remoteCall;
+- (instancetype)initWithRemoteCall:(RemoteCall *)remoteCall
+                 overlayRemoteCall:(nullable RemoteCall *)overlayRemoteCall;
 
 - (void)runLoop;
 - (void)stopLoop;

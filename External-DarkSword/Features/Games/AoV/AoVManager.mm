@@ -93,10 +93,17 @@ static constexpr int kMaxHackMapWorldActors = 128;
 @implementation AoVManager
 
 - (instancetype)initWithRemoteCall:(RemoteCall *)remoteCall {
+    return [self initWithRemoteCall:remoteCall overlayRemoteCall:nil];
+}
+
+- (instancetype)initWithRemoteCall:(RemoteCall *)remoteCall
+                 overlayRemoteCall:(nullable RemoteCall *)overlayRemoteCall {
     self = [super init];
     if (self) {
         [[AoVHeroNameResolver sharedResolver] loadFromRemote];
         _remoteCall = remoteCall;
+        _overlayRemoteCall = overlayRemoteCall;
+        _useSpringBoardOverlay = (overlayRemoteCall != nil);
         _cameraHeight = -1.0f;
         _isESPEnabled = YES;
         _isHackMapEnabled = NO;
@@ -154,12 +161,19 @@ static constexpr int kMaxHackMapWorldActors = 128;
               if (self.unityFrameworkBase != 0) {
                   if (!self.remoteWebViewOverlay.isOverlayReady) {
                       if (!self.remoteWebViewOverlay) {
+                          RemoteCall *callForOverlay =
+                              self.overlayRemoteCall ?: self.remoteCall;
+                          BOOL isSpringBoard =
+                              (self.overlayRemoteCall != nil) ||
+                              self.useSpringBoardOverlay;
                           self.remoteWebViewOverlay =
                               [[RemoteWebViewOverlay alloc]
-                                  initWithRemoteCall:self.remoteCall];
+                                  initWithRemoteCall:callForOverlay
+                                       isSpringBoard:isSpringBoard];
                       }
                       if ([self.remoteWebViewOverlay setupBaseOverlay]) {
-                          LOG(@"[AoV] WKWebView overlay setup done.");
+                          LOG(@"[AoV] WKWebView overlay setup done (%s).",
+                              self.remoteWebViewOverlay.isSpringBoard ? "SpringBoard" : "Internal");
                       } else {
                           LOG(@"[AoV] WKWebView overlay setup failed, will "
                               @"retry.");
@@ -208,6 +222,11 @@ static constexpr int kMaxHackMapWorldActors = 128;
         self.entitySnapshots = @[];
         self.viewProjectionData = [NSData data];
         self.hasValidFrame = NO;
+    }
+    if (self.remoteWebViewOverlay) {
+        [self.remoteWebViewOverlay clearTargets];
+        [self.remoteWebViewOverlay teardownOverlay];
+        self.remoteWebViewOverlay = nil;
     }
 }
 
@@ -657,8 +676,8 @@ static constexpr int kMaxHackMapWorldActors = 128;
         CGFloat sw = self.remoteWebViewOverlay.cachedScreenWidth;
         CGFloat sh = self.remoteWebViewOverlay.cachedScreenHeight;
         if (sw <= 0 || sh <= 0) {
-            sw = kWidth;
-            sh = kHeight;
+            sw = MAX(kWidth, kHeight);
+            sh = MIN(kWidth, kHeight);
         }
 
         BOOL visible = ProjectToOverlayPoint(entity.position, viewProjection,
