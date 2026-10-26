@@ -187,7 +187,7 @@ static constexpr int kMaxHackMapWorldActors = 128;
                   [self updateHackMapWithRemoteCall:self.remoteCall];
               }
           }
-          usleep(10000);
+          usleep(16000);
       }
       LOG(@"[AoV] Snapshot loop stopped.");
     });

@@ -57,6 +57,36 @@ static CGFloat OverlayClamp(CGFloat value, CGFloat lower, CGFloat upper) {
 
 static NSMutableDictionary<NSString *, NSNumber *> *g_sbClassCache = nil;
 static NSMutableDictionary<NSString *, NSNumber *> *g_sbSelectorCache = nil;
+static NSMutableDictionary<NSString *, NSNumber *> *g_sbInvCache = nil;
+static NSRecursiveLock *g_sbLock = nil;
+static CFAbsoluteTime s_sbOverlayReadyAt = 0;
+
+static void ds_sb_lock_init(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        g_sbLock = [[NSRecursiveLock alloc] init];
+    });
+}
+
+static inline NSString *ds_inv_cache_key(uint64_t target, uint64_t selector) {
+    return [NSString stringWithFormat:@"%llx_%llx", (unsigned long long)target, (unsigned long long)selector];
+}
+
+static uint64_t ds_inv_cache_get(RemoteCall *process, uint64_t target, uint64_t selector) {
+    if (!process || !process.trojanMem || !target || !selector || !g_sbInvCache) return 0;
+    NSNumber *hit = g_sbInvCache[ds_inv_cache_key(target, selector)];
+    return hit ? hit.unsignedLongLongValue : 0;
+}
+
+static void ds_inv_cache_put(RemoteCall *process, uint64_t target, uint64_t selector, uint64_t invocation) {
+    if (!process || !process.trojanMem || !target || !selector || !invocation) return;
+    if (!g_sbInvCache) g_sbInvCache = [NSMutableDictionary dictionary];
+    g_sbInvCache[ds_inv_cache_key(target, selector)] = @(invocation);
+}
+
+static void ds_inv_cache_clear(void) {
+    [g_sbInvCache removeAllObjects];
+}
 
 static uint64_t ds_remote_class(RemoteCall *process, const char *name) {
     if (!process || !process.trojanMem || !name) return 0;
@@ -103,76 +133,107 @@ static BOOL ds_remote_invoke_on_main_result(RemoteCall *process, uint64_t target
                                             const DSRemoteArg *arguments,
                                             NSUInteger argumentCount,
                                             void *result,
-                                            NSUInteger resultSize) {
+                                            NSUInteger resultSize,
+                                            BOOL retainResultObject) {
     if (!process || !target || !selector || !process.trojanMem) return NO;
 
-    uint64_t poolClass = ds_remote_class(process, "NSAutoreleasePool");
-    uint64_t allocSelector = ds_remote_sel(process, "alloc");
-    uint64_t initSelector = ds_remote_sel(process, "init");
-    uint64_t drainSelector = ds_remote_sel(process, "drain");
-    uint64_t autoreleasePool = (poolClass && allocSelector && initSelector && drainSelector)
-        ? remote_msg(process,
-                     remote_msg(process, poolClass, allocSelector, 0, 0, 0, 0),
-                     initSelector, 0, 0, 0, 0)
-        : 0;
-    if (!autoreleasePool) return NO;
-
+    ds_sb_lock_init();
+    [g_sbLock lock];
     @try {
-        uint64_t signature = remote_msg(process, target,
-                                        ds_remote_sel(process, "methodSignatureForSelector:"),
-                                        selector, 0, 0, 0);
-        if (!process.trojanMem) return NO;
-        uint64_t invocationClass = ds_remote_class(process, "NSInvocation");
-        uint64_t invocation = (signature && invocationClass)
-            ? remote_msg(process, invocationClass,
-                         ds_remote_sel(process, "invocationWithMethodSignature:"),
-                         signature, 0, 0, 0)
-            : 0;
-        if (!invocation || !process.trojanMem) return NO;
+        BOOL wantResult = (result && resultSize > 0);
+        uint64_t cachedInv = wantResult ? 0 : ds_inv_cache_get(process, target, selector);
 
-        remote_msg(process, invocation, ds_remote_sel(process, "setTarget:"), target, 0, 0, 0);
-        if (!process.trojanMem) return NO;
-        remote_msg(process, invocation, ds_remote_sel(process, "setSelector:"), selector, 0, 0, 0);
-        if (!process.trojanMem) return NO;
+        uint64_t autoreleasePool = 0;
+        uint64_t drainSelector = 0;
+        if (!cachedInv) {
+            uint64_t poolClass = ds_remote_class(process, "NSAutoreleasePool");
+            uint64_t allocSelector = ds_remote_sel(process, "alloc");
+            uint64_t initSelector = ds_remote_sel(process, "init");
+            drainSelector = ds_remote_sel(process, "drain");
+            autoreleasePool = (poolClass && allocSelector && initSelector && drainSelector)
+                ? remote_msg(process,
+                             remote_msg(process, poolClass, allocSelector, 0, 0, 0, 0),
+                             initSelector, 0, 0, 0, 0)
+                : 0;
+            if (!autoreleasePool) return NO;
+        }
 
-        uint64_t scratch = process.trojanMem + 0x800;
-        for (NSUInteger index = 0; index < argumentCount; index++) {
-            if (!arguments[index].bytes || arguments[index].size == 0 ||
-                ![process remote_write:scratch
-                                  from:arguments[index].bytes
-                                  size:arguments[index].size]) {
-                return NO;
+        @try {
+            uint64_t invocation = cachedInv;
+            if (!invocation) {
+                uint64_t signature = remote_msg(process, target,
+                                                ds_remote_sel(process, "methodSignatureForSelector:"),
+                                                selector, 0, 0, 0);
+                if (!process.trojanMem) return NO;
+                uint64_t invocationClass = ds_remote_class(process, "NSInvocation");
+                invocation = (signature && invocationClass)
+                    ? remote_msg(process, invocationClass,
+                                 ds_remote_sel(process, "invocationWithMethodSignature:"),
+                                 signature, 0, 0, 0)
+                    : 0;
+                if (!invocation || !process.trojanMem) return NO;
+
+                remote_msg(process, invocation, ds_remote_sel(process, "setTarget:"), target, 0, 0, 0);
+                if (!process.trojanMem) return NO;
+                remote_msg(process, invocation, ds_remote_sel(process, "setSelector:"), selector, 0, 0, 0);
+                if (!process.trojanMem) return NO;
+
+                if (!wantResult) {
+                    remote_msg(process, invocation, ds_remote_sel(process, "retain"), 0, 0, 0, 0);
+                    if (process.trojanMem) {
+                        ds_inv_cache_put(process, target, selector, invocation);
+                    }
+                }
             }
-            remote_msg(process, invocation, ds_remote_sel(process, "setArgument:atIndex:"),
-                       scratch, index + 2, 0, 0);
-            if (!process.trojanMem) return NO;
-            scratch += (arguments[index].size + 15) & ~15ULL;
-        }
 
-        ds_perform_on_springboard_main(process, invocation,
-                                       ds_remote_sel(process, "invoke"), 0, YES);
-        if (!process.trojanMem) return NO;
-        if (result && resultSize > 0) {
-            uint64_t resultScratch = process.trojanMem + 0xC00;
-            memset(result, 0, resultSize);
-            if (![process remote_write:resultScratch from:result size:resultSize]) return NO;
-            remote_msg(process, invocation, ds_remote_sel(process, "getReturnValue:"),
-                       resultScratch, 0, 0, 0);
+            uint64_t scratch = process.trojanMem + 0x800;
+            for (NSUInteger index = 0; index < argumentCount; index++) {
+                if (!arguments[index].bytes || arguments[index].size == 0 ||
+                    ![process remote_write:scratch
+                                      from:arguments[index].bytes
+                                      size:arguments[index].size]) {
+                    return NO;
+                }
+                remote_msg(process, invocation, ds_remote_sel(process, "setArgument:atIndex:"),
+                           scratch, index + 2, 0, 0);
+                if (!process.trojanMem) return NO;
+                scratch += (arguments[index].size + 15) & ~15ULL;
+            }
+
+            ds_perform_on_springboard_main(process, invocation,
+                                           ds_remote_sel(process, "invoke"), 0, YES);
             if (!process.trojanMem) return NO;
-            if (![process remoteRead:resultScratch to:result size:resultSize]) return NO;
+            if (wantResult) {
+                uint64_t resultScratch = process.trojanMem + 0xC00;
+                memset(result, 0, resultSize);
+                if (![process remote_write:resultScratch from:result size:resultSize]) return NO;
+                remote_msg(process, invocation, ds_remote_sel(process, "getReturnValue:"),
+                           resultScratch, 0, 0, 0);
+                if (!process.trojanMem) return NO;
+                if (![process remoteRead:resultScratch to:result size:resultSize]) return NO;
+
+                if (retainResultObject && resultSize == sizeof(uint64_t)) {
+                    uint64_t obj = *(uint64_t *)result;
+                    if (obj && process.trojanMem) {
+                        remote_msg(process, obj, ds_remote_sel(process, "retain"), 0, 0, 0, 0);
+                    }
+                }
+            }
+            return YES;
+        } @finally {
+            if (autoreleasePool && process.trojanMem && drainSelector) {
+                remote_msg(process, autoreleasePool, drainSelector, 0, 0, 0, 0);
+            }
         }
-        return YES;
     } @finally {
-        if (process.trojanMem) {
-            remote_msg(process, autoreleasePool, drainSelector, 0, 0, 0, 0);
-        }
+        [g_sbLock unlock];
     }
 }
 
 static BOOL ds_remote_invoke_noarg_on_main(RemoteCall *process, uint64_t target,
                                            const char *selectorName) {
     return ds_remote_invoke_on_main_result(process, target, ds_remote_sel(process, selectorName),
-                                           NULL, 0, NULL, 0);
+                                           NULL, 0, NULL, 0, NO);
 }
 
 static uint64_t ds_remote_get_object_on_main(RemoteCall *process, uint64_t target,
@@ -180,7 +241,16 @@ static uint64_t ds_remote_get_object_on_main(RemoteCall *process, uint64_t targe
     uint64_t result = 0;
     BOOL invoked = ds_remote_invoke_on_main_result(
         process, target, ds_remote_sel(process, selectorName), NULL, 0,
-        &result, sizeof(result));
+        &result, sizeof(result), NO);
+    return invoked ? result : 0;
+}
+
+static uint64_t ds_remote_get_retained_object_on_main(RemoteCall *process, uint64_t target,
+                                                      const char *selectorName) {
+    uint64_t result = 0;
+    BOOL invoked = ds_remote_invoke_on_main_result(
+        process, target, ds_remote_sel(process, selectorName), NULL, 0,
+        &result, sizeof(result), YES);
     return invoked ? result : 0;
 }
 
@@ -188,21 +258,27 @@ static BOOL ds_remote_set_u64_on_main(RemoteCall *process, uint64_t target,
                                       const char *selectorName, uint64_t value) {
     DSRemoteArg argument = { &value, sizeof(value) };
     return ds_remote_invoke_on_main_result(process, target, ds_remote_sel(process, selectorName),
-                                           &argument, 1, NULL, 0);
+                                           &argument, 1, NULL, 0, NO);
 }
 
 static BOOL ds_remote_set_double_on_main(RemoteCall *process, uint64_t target,
                                          const char *selectorName, double value) {
     DSRemoteArg argument = { &value, sizeof(value) };
     return ds_remote_invoke_on_main_result(process, target, ds_remote_sel(process, selectorName),
-                                           &argument, 1, NULL, 0);
+                                           &argument, 1, NULL, 0, NO);
 }
 
 static BOOL ds_remote_set_rect_on_main(RemoteCall *process, uint64_t target,
                                        const char *selectorName, CGRect value) {
+    if (!isfinite(value.origin.x) || !isfinite(value.origin.y) ||
+        !isfinite(value.size.width) || !isfinite(value.size.height) ||
+        value.size.width < 0 || value.size.height < 0 ||
+        value.size.width > 50000 || value.size.height > 50000) {
+        return NO;
+    }
     DSRemoteArg argument = { &value, sizeof(value) };
     return ds_remote_invoke_on_main_result(process, target, ds_remote_sel(process, selectorName),
-                                           &argument, 1, NULL, 0);
+                                           &argument, 1, NULL, 0, NO);
 }
 
 static uint64_t ds_remote_create_string(RemoteCall *process, NSString *value) {
@@ -261,6 +337,8 @@ typedef struct {
     BOOL isNameVisible;
     BOOL isLineVisible;
     char lastTextBuf[64];
+    CFAbsoluteTime lastTextUpdate;
+    int lastDistance;
 } SpringBoardESPSlot;
 
 static inline BOOL IsFrameSignificantlyDifferent(CGRect a, CGRect b) {
@@ -709,12 +787,17 @@ static inline BOOL IsFrameSignificantlyDifferent(CGRect a, CGRect b) {
     ds_remote_set_rect_on_main(self.remoteCall, container, "setFrame:", hudFrame);
     ds_remote_set_rect_on_main(self.remoteCall, label, "setFrame:", CGRectMake(0, 0, hudW, hudH));
 
-    uint64_t clearColor = ds_remote_get_object_on_main(self.remoteCall, colorClass, "clearColor");
-    uint64_t whiteColor = ds_remote_get_object_on_main(self.remoteCall, colorClass, "whiteColor");
-    uint64_t redColor = ds_remote_get_object_on_main(self.remoteCall, colorClass, "redColor");
-    uint64_t greenColor = ds_remote_get_object_on_main(self.remoteCall, colorClass, "greenColor");
-    uint64_t blackColor = ds_remote_get_object_on_main(self.remoteCall, colorClass, "blackColor");
-    uint64_t darkBgColor = ds_remote_get_object_on_main(self.remoteCall, colorClass, "darkGrayColor");
+    uint64_t winLayer = ds_remote_get_object_on_main(self.remoteCall, window, "layer");
+    if (winLayer) {
+        ds_remote_set_double_on_main(self.remoteCall, winLayer, "setSpeed:", 999.0);
+    }
+
+    uint64_t clearColor = ds_remote_get_retained_object_on_main(self.remoteCall, colorClass, "clearColor");
+    uint64_t whiteColor = ds_remote_get_retained_object_on_main(self.remoteCall, colorClass, "whiteColor");
+    uint64_t redColor = ds_remote_get_retained_object_on_main(self.remoteCall, colorClass, "redColor");
+    uint64_t greenColor = ds_remote_get_retained_object_on_main(self.remoteCall, colorClass, "greenColor");
+    uint64_t blackColor = ds_remote_get_retained_object_on_main(self.remoteCall, colorClass, "blackColor");
+    uint64_t darkBgColor = ds_remote_get_retained_object_on_main(self.remoteCall, colorClass, "darkGrayColor");
     uint64_t redCGColor = redColor ? ds_remote_get_object_on_main(self.remoteCall, redColor, "CGColor") : 0;
 
     if (clearColor) {
@@ -735,6 +818,7 @@ static inline BOOL IsFrameSignificantlyDifferent(CGRect a, CGRect b) {
     if (containerLayer) {
         ds_remote_set_double_on_main(self.remoteCall, containerLayer, "setCornerRadius:", 5.0);
         ds_remote_set_u64_on_main(self.remoteCall, containerLayer, "setMasksToBounds:", 1);
+        ds_remote_set_double_on_main(self.remoteCall, containerLayer, "setSpeed:", 999.0);
     }
 
     ds_remote_set_text_on_main(self.remoteCall, label, @"DarkLQ AoV ESP");
@@ -748,7 +832,7 @@ static inline BOOL IsFrameSignificantlyDifferent(CGRect a, CGRect b) {
     if (fontClass) {
         double fontSize = 10.0;
         DSRemoteArg fontArg = { &fontSize, sizeof(fontSize) };
-        ds_remote_invoke_on_main_result(self.remoteCall, fontClass, ds_remote_sel(self.remoteCall, "boldSystemFontOfSize:"), &fontArg, 1, &espFont, sizeof(espFont));
+        ds_remote_invoke_on_main_result(self.remoteCall, fontClass, ds_remote_sel(self.remoteCall, "boldSystemFontOfSize:"), &fontArg, 1, &espFont, sizeof(espFont), YES);
     }
 
     for (NSUInteger i = 0; i < kMaxSpringBoardSlots; i++) {
@@ -765,10 +849,11 @@ static inline BOOL IsFrameSignificantlyDifferent(CGRect a, CGRect b) {
             uint64_t boxLayer = ds_remote_get_object_on_main(self.remoteCall, box, "layer");
             if (boxLayer) {
                 if (redCGColor) {
-                    ds_perform_on_springboard_main(self.remoteCall, boxLayer, ds_remote_sel(self.remoteCall, "setBorderColor:"), redCGColor, YES);
+                    ds_remote_set_u64_on_main(self.remoteCall, boxLayer, "setBorderColor:", redCGColor);
                 }
                 ds_remote_set_double_on_main(self.remoteCall, boxLayer, "setBorderWidth:", 1.5);
                 ds_remote_set_double_on_main(self.remoteCall, boxLayer, "setCornerRadius:", 2.0);
+                ds_remote_set_double_on_main(self.remoteCall, boxLayer, "setSpeed:", 999.0);
             }
             ds_perform_on_springboard_main(self.remoteCall, window, ds_remote_sel(self.remoteCall, "addSubview:"), box, YES);
             slot->boxView = box;
@@ -786,6 +871,7 @@ static inline BOOL IsFrameSignificantlyDifferent(CGRect a, CGRect b) {
             if (hpBgLayer) {
                 ds_remote_set_double_on_main(self.remoteCall, hpBgLayer, "setCornerRadius:", 1.0);
                 ds_remote_set_u64_on_main(self.remoteCall, hpBgLayer, "setMasksToBounds:", 1);
+                ds_remote_set_double_on_main(self.remoteCall, hpBgLayer, "setSpeed:", 999.0);
             }
             ds_perform_on_springboard_main(self.remoteCall, window, ds_remote_sel(self.remoteCall, "addSubview:"), hpBg, YES);
             slot->hpBgView = hpBg;
@@ -795,6 +881,10 @@ static inline BOOL IsFrameSignificantlyDifferent(CGRect a, CGRect b) {
             if (hpFill && ds_remote_invoke_noarg_on_main(self.remoteCall, hpFill, "init")) {
                 ds_perform_on_springboard_main(self.remoteCall, hpFill, ds_remote_sel(self.remoteCall, "setBackgroundColor:"), greenColor, YES);
                 ds_remote_set_u64_on_main(self.remoteCall, hpFill, "setUserInteractionEnabled:", 0);
+                uint64_t hpFillLayer = ds_remote_get_object_on_main(self.remoteCall, hpFill, "layer");
+                if (hpFillLayer) {
+                    ds_remote_set_double_on_main(self.remoteCall, hpFillLayer, "setSpeed:", 999.0);
+                }
                 ds_perform_on_springboard_main(self.remoteCall, hpBg, ds_remote_sel(self.remoteCall, "addSubview:"), hpFill, YES);
                 slot->hpFillView = hpFill;
             }
@@ -814,6 +904,7 @@ static inline BOOL IsFrameSignificantlyDifferent(CGRect a, CGRect b) {
             if (lblLayer) {
                 ds_remote_set_double_on_main(self.remoteCall, lblLayer, "setCornerRadius:", 2.5);
                 ds_remote_set_u64_on_main(self.remoteCall, lblLayer, "setMasksToBounds:", 1);
+                ds_remote_set_double_on_main(self.remoteCall, lblLayer, "setSpeed:", 999.0);
             }
             if (espFont) {
                 ds_perform_on_springboard_main(self.remoteCall, nameLbl, ds_remote_sel(self.remoteCall, "setFont:"), espFont, YES);
@@ -829,6 +920,10 @@ static inline BOOL IsFrameSignificantlyDifferent(CGRect a, CGRect b) {
             ds_remote_set_double_on_main(self.remoteCall, line, "setAlpha:", 0.7);
             ds_remote_set_u64_on_main(self.remoteCall, line, "setUserInteractionEnabled:", 0);
             ds_remote_set_u64_on_main(self.remoteCall, line, "setHidden:", 1);
+            uint64_t lineLayer = ds_remote_get_object_on_main(self.remoteCall, line, "layer");
+            if (lineLayer) {
+                ds_remote_set_double_on_main(self.remoteCall, lineLayer, "setSpeed:", 999.0);
+            }
             ds_perform_on_springboard_main(self.remoteCall, window, ds_remote_sel(self.remoteCall, "addSubview:"), line, YES);
             slot->lineView = line;
         }
@@ -841,6 +936,7 @@ static inline BOOL IsFrameSignificantlyDifferent(CGRect a, CGRect b) {
     self.springBoardLabel = label;
     self.springBoardContainer = container;
     self.isOverlayReady = YES;
+    s_sbOverlayReadyAt = CFAbsoluteTimeGetCurrent();
 
     LOG(@"[RemoteWebViewOverlay] SpringBoard overlay window ready with 5 ESP slots (window=0x%llx, scene=0x%llx)", window, scene);
     return YES;
@@ -1183,9 +1279,13 @@ static inline BOOL IsFrameSignificantlyDifferent(CGRect a, CGRect b) {
     }
 
     if (self.isSpringBoard) {
-        static CFAbsoluteTime lastESPUpdate = 0;
         CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-        if (now - lastESPUpdate < 0.025) { // Up to 40 FPS
+        if (s_sbOverlayReadyAt > 0 && now - s_sbOverlayReadyAt < 1.0) {
+            return YES; // Settle delay: give SpringBoard 1.0s to attach window scene before frame updates
+        }
+
+        static CFAbsoluteTime lastESPUpdate = 0;
+        if (now - lastESPUpdate < 0.040) { // 25 FPS throttle (safe for SpringBoard watchdog)
             return YES;
         }
         lastESPUpdate = now;
@@ -1247,7 +1347,7 @@ static inline BOOL IsFrameSignificantlyDifferent(CGRect a, CGRect b) {
                         slot->isHpVisible = NO;
                     }
 
-                    // 3. Name & Distance
+                    // 3. Name & Distance (rate-limited setText to 2Hz)
                     BOOL drawName = [target[@"drawName"] boolValue];
                     BOOL drawDist = [target[@"drawDistance"] boolValue];
                     if ((drawName || drawDist) && hasBox && slot->nameLabel) {
@@ -1268,8 +1368,12 @@ static inline BOOL IsFrameSignificantlyDifferent(CGRect a, CGRect b) {
                             ds_remote_set_rect_on_main(self.remoteCall, slot->nameLabel, "setFrame:", newLabel);
                             slot->lastLabelFrame = newLabel;
                         }
-                        if (strncmp(slot->lastTextBuf, info.UTF8String, sizeof(slot->lastTextBuf)) != 0) {
+                        BOOL textChanged = (strncmp(slot->lastTextBuf, info.UTF8String, sizeof(slot->lastTextBuf)) != 0);
+                        if (textChanged && (slot->lastTextUpdate == 0 || now - slot->lastTextUpdate >= 0.5)) {
+                            slot->lastTextUpdate = now;
+                            slot->lastDistance = dist;
                             strncpy(slot->lastTextBuf, info.UTF8String, sizeof(slot->lastTextBuf) - 1);
+                            slot->lastTextBuf[sizeof(slot->lastTextBuf) - 1] = '\0';
                             ds_remote_set_text_on_main(self.remoteCall, slot->nameLabel, info);
                         }
                     } else if (slot->isNameVisible && slot->nameLabel) {
@@ -1318,10 +1422,10 @@ static inline BOOL IsFrameSignificantlyDifferent(CGRect a, CGRect b) {
             }
         }
 
-        // Top HUD badge update (throttled to 2 FPS)
+        // Top HUD badge update (throttled to 1 FPS = 1.0s)
         if (self.springBoardLabel) {
             static CFAbsoluteTime lastBadgeUpdate = 0;
-            if (now - lastBadgeUpdate >= 0.5) {
+            if (now - lastBadgeUpdate >= 1.0) {
                 lastBadgeUpdate = now;
                 NSString *badge = [NSString stringWithFormat:@"AoV ESP [Dich: %lu]", (unsigned long)targetCount];
                 ds_remote_set_text_on_main(self.remoteCall, self.springBoardLabel, badge);
@@ -1437,6 +1541,8 @@ static inline BOOL IsFrameSignificantlyDifferent(CGRect a, CGRect b) {
             slot->lastLabelFrame = CGRectZero;
             slot->lastLineFrame = CGRectZero;
             slot->lastTextBuf[0] = '\0';
+            slot->lastTextUpdate = 0;
+            slot->lastDistance = 0;
         }
         if (self.springBoardLabel) {
             ds_remote_set_text_on_main(self.remoteCall, self.springBoardLabel, @"AoV ESP [0]");
@@ -1462,6 +1568,8 @@ static inline BOOL IsFrameSignificantlyDifferent(CGRect a, CGRect b) {
         self.isSpringBoard ? "SpringBoard" : "Internal");
 
     if (self.isSpringBoard) {
+        ds_inv_cache_clear();
+        s_sbOverlayReadyAt = 0;
         for (NSUInteger i = 0; i < kMaxSpringBoardSlots; i++) {
             SpringBoardESPSlot *slot = &_espSlots[i];
             uint64_t removeSEL = ds_remote_sel(self.remoteCall, "removeFromSuperview");
