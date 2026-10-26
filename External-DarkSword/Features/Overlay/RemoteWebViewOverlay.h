@@ -13,18 +13,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 typedef uint64_t RemoteObjectRef;
 
-@protocol RemoteWebViewOverlayDelegate <NSObject>
-@optional
-- (void)overlayDidToggleLine:(BOOL)enabled;
-- (void)overlayDidToggleBox:(BOOL)enabled;
-- (void)overlayDidToggleHealth:(BOOL)enabled;
-- (void)overlayDidToggleName:(BOOL)enabled;
-- (void)overlayDidToggleHackMap:(BOOL)enabled;
-@end
-
 @interface RemoteWebViewOverlay : NSObject
 
-@property(nonatomic, weak, nullable) id<RemoteWebViewOverlayDelegate> delegate;
 @property(nonatomic, assign, readonly) RemoteCall *remoteCall;
 @property(nonatomic, assign, readonly) RemoteObjectRef window;
 @property(nonatomic, assign, readonly) CGFloat cachedScreenWidth;
