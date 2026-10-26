@@ -480,6 +480,33 @@ final class DarkSwordManager: ObservableObject {
 
     let freeFireBundleIdentifier = "com.dts.freefireth"
 
+    // The overlay menu is shared by both games, so resolve which game is
+    // currently connected before syncing or applying menu options.
+    private var activeOverlayGame: String {
+        let process = connectedProcess.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        if process.lowercased().contains("freefire") {
+            return "freefire"
+        }
+        if !process.isEmpty, process == aovProcess {
+            return "aov"
+        }
+        if freeFireManager != nil && aovManager == nil {
+            return "freefire"
+        }
+        if aovManager != nil && freeFireManager == nil {
+            return "aov"
+        }
+        if !process.isEmpty {
+            return "aov"
+        }
+        if freeFireManager != nil {
+            return "freefire"
+        }
+        return "aov"
+    }
+
     var isConnectedToFreeFire: Bool {
         let process = resolvedFreeFireProcessName()
         return remoteConnected && connectedProcess == process
@@ -1013,6 +1040,7 @@ final class DarkSwordManager: ObservableObject {
             "Disconnecting \(connectedProcess), then opening \(aovBundleIdentifier)..."
         )
         aovManager?.stopLoop()
+        freeFireManager?.stopLoop()
 
         workerQueue.async { [weak self] in
             guard let self else { return }
@@ -1020,6 +1048,7 @@ final class DarkSwordManager: ObservableObject {
             let result = remoteCall.destroy()
             DispatchQueue.main.async {
                 self.aovManager = nil
+                self.freeFireManager = nil
                 self.remoteCall = nil
                 self.remoteConnected = false
                 self.connectedProcess = ""
@@ -1129,6 +1158,7 @@ final class DarkSwordManager: ObservableObject {
         appendLog(
             "Disconnecting \(connectedProcess), then opening \(freeFireBundleIdentifier)..."
         )
+        aovManager?.stopLoop()
         freeFireManager?.stopLoop()
 
         workerQueue.async { [weak self] in
@@ -1136,6 +1166,7 @@ final class DarkSwordManager: ObservableObject {
             usleep(50_000)
             let result = remoteCall.destroy()
             DispatchQueue.main.async {
+                self.aovManager = nil
                 self.freeFireManager = nil
                 self.remoteCall = nil
                 self.remoteConnected = false
@@ -1431,72 +1462,142 @@ final class DarkSwordManager: ObservableObject {
 
     @discardableResult
     private func applyOverlayOption(key: String, value: Any) -> Bool {
+        let game = activeOverlayGame
         switch key {
-        case "aovESPEnabled", "freeFireESPEnabled", "espEnabled", "esp":
-            guard let bool = boolValue(value) else {
-                return false
-            }
+        case "aovESPEnabled":
+            guard let bool = boolValue(value) else { return false }
             aovESPEnabled = bool
+            return true
+        case "freeFireESPEnabled":
+            guard let bool = boolValue(value) else { return false }
             freeFireESPEnabled = bool
             return true
-        case "aovHackMapEnabled", "hackMapEnabled", "hackMap", "map":
-            guard let bool = boolValue(value), bool != aovHackMapEnabled else {
+        case "espEnabled", "esp":
+            guard let bool = boolValue(value) else { return false }
+            if game == "freefire" {
+                freeFireESPEnabled = bool
+            } else {
+                aovESPEnabled = bool
+            }
+            return true
+        case "aovHackMapEnabled":
+            guard let bool = boolValue(value) else { return false }
+            aovHackMapEnabled = bool
+            return true
+        case "hackMapEnabled", "hackMap", "map":
+            guard game != "freefire", let bool = boolValue(value),
+                bool != aovHackMapEnabled
+            else {
                 return false
             }
             aovHackMapEnabled = bool
             return true
-        case "aovShowsLine", "freeFireShowsLine", "showsLine", "line":
-            guard let bool = boolValue(value) else {
-                return false
-            }
+        case "aovShowsLine":
+            guard let bool = boolValue(value) else { return false }
             aovShowsLine = bool
+            return true
+        case "freeFireShowsLine":
+            guard let bool = boolValue(value) else { return false }
             freeFireShowsLine = bool
             return true
-        case "aovShowsBox", "freeFireShowsBox", "showsBox", "box":
-            guard let bool = boolValue(value) else {
-                return false
+        case "showsLine", "line":
+            guard let bool = boolValue(value) else { return false }
+            if game == "freefire" {
+                freeFireShowsLine = bool
+            } else {
+                aovShowsLine = bool
             }
+            return true
+        case "aovShowsBox":
+            guard let bool = boolValue(value) else { return false }
             aovShowsBox = bool
+            return true
+        case "freeFireShowsBox":
+            guard let bool = boolValue(value) else { return false }
             freeFireShowsBox = bool
             return true
-        case "aovShowsHealth", "freeFireShowsHealth", "showsHealth", "health":
-            guard let bool = boolValue(value) else {
-                return false
+        case "showsBox", "box":
+            guard let bool = boolValue(value) else { return false }
+            if game == "freefire" {
+                freeFireShowsBox = bool
+            } else {
+                aovShowsBox = bool
             }
+            return true
+        case "aovShowsHealth":
+            guard let bool = boolValue(value) else { return false }
             aovShowsHealth = bool
+            return true
+        case "freeFireShowsHealth":
+            guard let bool = boolValue(value) else { return false }
             freeFireShowsHealth = bool
             return true
-        case "aovShowsName", "freeFireShowsName", "showsName", "name":
-            guard let bool = boolValue(value) else {
-                return false
+        case "showsHealth", "health":
+            guard let bool = boolValue(value) else { return false }
+            if game == "freefire" {
+                freeFireShowsHealth = bool
+            } else {
+                aovShowsHealth = bool
             }
+            return true
+        case "aovShowsName":
+            guard let bool = boolValue(value) else { return false }
             aovShowsName = bool
+            return true
+        case "freeFireShowsName":
+            guard let bool = boolValue(value) else { return false }
             freeFireShowsName = bool
             return true
-        case "aovShowsDistance", "freeFireShowsDistance", "showsDistance", "distance":
-            guard let bool = boolValue(value) else {
-                return false
+        case "showsName", "name":
+            guard let bool = boolValue(value) else { return false }
+            if game == "freefire" {
+                freeFireShowsName = bool
+            } else {
+                aovShowsName = bool
             }
+            return true
+        case "aovShowsDistance":
+            guard let bool = boolValue(value) else { return false }
             aovShowsDistance = bool
+            return true
+        case "freeFireShowsDistance":
+            guard let bool = boolValue(value) else { return false }
             freeFireShowsDistance = bool
             return true
-        case "aovCameraHeight", "cameraHeight":
-            guard let double = doubleValue(value) else { return false }
-            let clamped = min(
-                max(double, Self.aovCameraHeightMinValue),
-                Self.aovCameraHeightMaxValue
-            )
-            guard abs(clamped - aovCameraHeight) > 0.001 else { return false }
-            aovCameraHeight = clamped
-            NotificationCenter.default.post(
-                name: NSNotification.Name.CameraHeightDidChange,
-                object: nil,
-                userInfo: nil
-            )
+        case "showsDistance", "distance":
+            guard let bool = boolValue(value) else { return false }
+            if game == "freefire" {
+                freeFireShowsDistance = bool
+            } else {
+                aovShowsDistance = bool
+            }
             return true
+        case "aovCameraHeight":
+            guard let double = doubleValue(value) else { return false }
+            return applyAoVCameraHeight(double)
+        case "cameraHeight":
+            guard game != "freefire", let double = doubleValue(value) else {
+                return false
+            }
+            return applyAoVCameraHeight(double)
         default:
             return false
         }
+    }
+
+    private func applyAoVCameraHeight(_ value: Double) -> Bool {
+        let clamped = min(
+            max(value, Self.aovCameraHeightMinValue),
+            Self.aovCameraHeightMaxValue
+        )
+        guard abs(clamped - aovCameraHeight) > 0.001 else { return false }
+        aovCameraHeight = clamped
+        NotificationCenter.default.post(
+            name: NSNotification.Name.CameraHeightDidChange,
+            object: nil,
+            userInfo: nil
+        )
+        return true
     }
 
     private func boolValue(_ value: Any) -> Bool? {
@@ -1524,18 +1625,34 @@ final class DarkSwordManager: ObservableObject {
     }
 
     private func broadcastOverlayState() {
+        let game = activeOverlayGame
+        let isFreeFire = game == "freefire"
         let state: [String: Any] = [
             "debug": g_isDebug,
-            "espEnabled": aovESPEnabled,
+            "game": game,
+            "espEnabled": isFreeFire ? freeFireESPEnabled : aovESPEnabled,
             "hackMapEnabled": aovHackMapEnabled,
-            "showsLine": aovShowsLine,
-            "showsBox": aovShowsBox,
-            "showsHealth": aovShowsHealth,
-            "showsName": aovShowsName,
-            "showsDistance": aovShowsDistance,
+            "showsLine": isFreeFire ? freeFireShowsLine : aovShowsLine,
+            "showsBox": isFreeFire ? freeFireShowsBox : aovShowsBox,
+            "showsHealth": isFreeFire ? freeFireShowsHealth : aovShowsHealth,
+            "showsName": isFreeFire ? freeFireShowsName : aovShowsName,
+            "showsDistance": isFreeFire
+                ? freeFireShowsDistance : aovShowsDistance,
             "cameraHeight": aovCameraHeight,
             "cameraHeightMin": Self.aovCameraHeightMinValue,
             "cameraHeightMax": Self.aovCameraHeightMaxValue,
+            "aovESPEnabled": aovESPEnabled,
+            "aovShowsLine": aovShowsLine,
+            "aovShowsBox": aovShowsBox,
+            "aovShowsHealth": aovShowsHealth,
+            "aovShowsName": aovShowsName,
+            "aovShowsDistance": aovShowsDistance,
+            "freeFireESPEnabled": freeFireESPEnabled,
+            "freeFireShowsLine": freeFireShowsLine,
+            "freeFireShowsBox": freeFireShowsBox,
+            "freeFireShowsHealth": freeFireShowsHealth,
+            "freeFireShowsName": freeFireShowsName,
+            "freeFireShowsDistance": freeFireShowsDistance,
             "remoteConnected": remoteConnected,
             "connectedProcess": connectedProcess,
             "aovStatus": aovStatus,

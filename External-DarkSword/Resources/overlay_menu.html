@@ -53,9 +53,23 @@
         touch-action: none;
       }
       .title {
+        display: flex;
+        align-items: center;
+        gap: 6px;
         font-size: 15px;
         font-weight: 800;
         line-height: 18px;
+      }
+      .gameBadge {
+        padding: 1px 6px;
+        border: 1px solid rgba(109, 255, 173, 0.45);
+        border-radius: 4px;
+        background: rgba(109, 255, 173, 0.12);
+        color: #9dffc3;
+        font-size: 9px;
+        font-weight: 800;
+        letter-spacing: 0.2px;
+        text-transform: uppercase;
       }
       .subtitle {
         margin-top: 1px;
@@ -109,6 +123,12 @@
         color: #c8ffdc;
         background: rgba(83, 255, 147, 0.12);
         box-shadow: inset 0 -2px #65f7a4;
+      }
+      body.game-freefire #tabs {
+        grid-template-columns: 1fr 1fr;
+      }
+      body.game-freefire .aov-only {
+        display: none !important;
       }
       #content {
         height: calc(100% - 87px);
@@ -286,7 +306,10 @@
     <section id="menu" aria-label="Menu Mod">
       <header id="header">
         <div>
-          <div class="title">Menu Mod</div>
+          <div class="title">
+            Menu Mod
+            <span id="gameBadge" class="gameBadge">Liên Quân</span>
+          </div>
           <div class="subtitle">Develop by Le Tien Dat</div>
         </div>
         <div class="headerActions">
@@ -302,7 +325,7 @@
       </header>
       <nav id="tabs">
         <button class="tab active" data-tab="esp">ESP</button>
-        <button class="tab" data-tab="camera" data-i18n="tabCamera">
+        <button class="tab aov-only" data-tab="camera" data-i18n="tabCamera">
           Camera
         </button>
         <button class="tab" data-tab="drag" data-i18n="dragTitle">
@@ -311,12 +334,18 @@
       </nav>
       <main id="content">
         <section class="panel active" data-panel="esp">
-          <div class="sectionTitle" data-i18n="visual">Visual</div>
+          <div
+            class="sectionTitle"
+            data-i18n-aov="visual"
+            data-i18n-freefire="visualFreeFire"
+          >
+            Visual
+          </div>
           <div class="row">
             <div><div class="rowTitle">ESP</div></div>
             <button class="switch" data-key="espEnabled"></button>
           </div>
-          <div class="row">
+          <div class="row aov-only">
             <div>
               <div class="rowTitle" data-i18n="hackMap">Hack map</div>
               <div class="rowValue" data-i18n="hackMapHint">
@@ -352,8 +381,20 @@
           </div>
           <div class="row">
             <div>
-              <div class="rowTitle" data-i18n="name">Hero name</div>
-              <div class="rowValue" data-i18n="nameHint">Hero label</div>
+              <div
+                class="rowTitle"
+                data-i18n-aov="heroName"
+                data-i18n-freefire="playerName"
+              >
+                Hero name
+              </div>
+              <div
+                class="rowValue"
+                data-i18n-aov="heroNameHint"
+                data-i18n-freefire="playerNameHint"
+              >
+                Hero label
+              </div>
             </div>
             <button class="switch" data-key="showsName"></button>
           </div>
@@ -367,7 +408,7 @@
             <button class="switch" data-key="showsDistance"></button>
           </div>
         </section>
-        <section class="panel" data-panel="camera">
+        <section class="panel aov-only" data-panel="camera">
           <div class="sectionTitle" data-i18n="camera">Camera</div>
           <div class="rangeCard">
             <div class="rangeTop">
@@ -409,6 +450,7 @@
       var screenMap = document.getElementById("screenMap");
       var fabDot = document.getElementById("fabDot");
       var state = {
+        game: "aov",
         espEnabled: false,
         hackMapEnabled: false,
         showsLine: false,
@@ -435,8 +477,11 @@
       var pendingMenuVisibility = null;
       var translations = {
         en: {
+          gameAov: "Liên Quân",
+          gameFreeFire: "Free Fire",
           tabCamera: "Camera",
           visual: "Visual",
+          visualFreeFire: "Player ESP",
           hackMap: "Hack map",
           hackMapHint: "Active visible full enemies",
           line: "Line",
@@ -445,8 +490,10 @@
           boxHint: "Box around each enemy",
           health: "Health bar",
           healthHint: "Show above the box",
-          name: "Hero name",
-          nameHint: "Show hero name",
+          heroName: "Hero name",
+          heroNameHint: "Show hero name",
+          playerName: "Player name",
+          playerNameHint: "Show player name",
           distance: "Distance",
           distanceHint: "Show distance to enemy",
           camera: "Camera",
@@ -456,8 +503,11 @@
           dragHint: "Tap where you want to place the floating button.",
         },
         vi: {
+          gameAov: "Liên Quân",
+          gameFreeFire: "Free Fire",
           tabCamera: "Camera",
           visual: "Hiển thị ESP",
+          visualFreeFire: "ESP người chơi",
           hackMap: "Map sáng",
           hackMapHint: "Hiển thị full kẻ địch",
           line: "Line",
@@ -466,8 +516,10 @@
           boxHint: "Khung quanh từng kẻ địch",
           health: "Máu",
           healthHint: "Hiển thị máu địch",
-          name: "Tên tướng",
-          nameHint: "Hiển thị tên tướng",
+          heroName: "Tên tướng",
+          heroNameHint: "Hiển thị tên tướng",
+          playerName: "Tên người chơi",
+          playerNameHint: "Hiển thị tên người chơi",
           distance: "Khoảng cách",
           distanceHint: "Hiển thị khoảng cách tới địch",
           camera: "Camera",
@@ -526,17 +578,46 @@
         fabDot.style.top = clamp(Number(layout.fabCenterY), 0, 1) * 100 + "%";
       }
 
+      function activeGame() {
+        return state.game === "freefire" ? "freefire" : "aov";
+      }
+
       function applyLocale() {
-        var vietnamese = locale === "vi";
-        document.getElementById("language").textContent = vietnamese
-          ? "EN"
-          : "VI";
-        document.documentElement.lang = locale;
         var strings = translations[locale] || translations.vi;
-        document.querySelectorAll("[data-i18n]").forEach(function (element) {
-          var value = strings[element.dataset.i18n];
-          if (value) element.textContent = value;
-        });
+        document.getElementById("language").textContent =
+          locale === "vi" ? "EN" : "VI";
+        document.documentElement.lang = locale;
+        document
+          .querySelectorAll(
+            "[data-i18n], [data-i18n-aov], [data-i18n-freefire]",
+          )
+          .forEach(function (element) {
+            var key = element.dataset.i18n;
+            if (!key) {
+              key =
+                activeGame() === "freefire"
+                  ? element.dataset.i18nFreefire
+                  : element.dataset.i18nAov;
+            }
+            var value = key ? strings[key] : "";
+            if (value) element.textContent = value;
+          });
+        document.getElementById("gameBadge").textContent =
+          activeGame() === "freefire"
+            ? strings.gameFreeFire
+            : strings.gameAov;
+      }
+
+      function applyGameMode() {
+        var isFreeFire = activeGame() === "freefire";
+        document.body.classList.toggle("game-freefire", isFreeFire);
+        if (isFreeFire) {
+          var activeTab = document.querySelector(".tab.active");
+          if (activeTab && activeTab.dataset.tab === "camera") {
+            document.querySelector('.tab[data-tab="esp"]').click();
+          }
+        }
+        applyLocale();
       }
 
       function applyPayload(raw) {
@@ -546,6 +627,7 @@
             Object.keys(payload.state).forEach(function (key) {
               state[key] = payload.state[key];
             });
+            applyGameMode();
             renderState();
           }
           if (payload && payload.type === "overlayLayout" && payload.layout) {
@@ -710,7 +792,7 @@
       header.addEventListener("pointerup", stopMenuDrag);
       header.addEventListener("pointercancel", stopMenuDrag);
 
-      applyLocale();
+      applyGameMode();
       renderState();
       renderLayout();
       connect();
