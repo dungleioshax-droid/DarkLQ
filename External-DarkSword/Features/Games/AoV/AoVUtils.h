@@ -403,11 +403,20 @@ static Vector3 FixedPosition(VInt3 location, VInt3 forward) {
 
 static Vector3 ReadActorPosition(RemoteCall *remoteCall, uintptr_t actor,
                                  uintptr_t logicActor) {
-    VInt3 location =
-        ReadMemorySafe<VInt3>(remoteCall, actor + kActorLinker_Location);
-    Vector3 position = Vector3((float)location.X * 0.001f, (float)location.Y * 0.001f, (float)location.Z * 0.001f);
+    Vector3 position = Vector3::zero();
 
-    if (validOffsetPtr(logicActor)) {
+    // 1. Primary: Read Visual ActorLinker Location (updated every graphic frame in Unity)
+    if (validOffsetPtr(actor)) {
+        VInt3 location =
+            ReadMemorySafe<VInt3>(remoteCall, actor + kActorLinker_Location);
+        Vector3 visualPos = Vector3((float)location.X * 0.001f, (float)location.Y * 0.001f, (float)location.Z * 0.001f);
+        if (fabsf(visualPos.x) > 0.001f || fabsf(visualPos.z) > 0.001f) {
+            position = visualPos;
+        }
+    }
+
+    // 2. Fallback: Only if ActorLinker visual position is zero/unavailable, use LogicActor simulation position
+    if (fabsf(position.x) <= 0.001f && fabsf(position.z) <= 0.001f && validOffsetPtr(logicActor)) {
         VInt3 logicLocation = ReadMemorySafe<VInt3>(
             remoteCall, logicActor + kLActorRoot_Location);
         Vector3 logicPosition = Vector3((float)logicLocation.X * 0.001f, (float)logicLocation.Y * 0.001f, (float)logicLocation.Z * 0.001f);
