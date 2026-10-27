@@ -886,7 +886,7 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
     if (!passWinClass) {
         uint64_t bundleClass = ds_remote_class(self.remoteCall, "NSBundle");
         if (bundleClass) {
-            uint64_t sbfPath = ds_remote_create_string(self.remoteCall, "/System/Library/PrivateFrameworks/SpringBoardFoundation.framework");
+            uint64_t sbfPath = ds_remote_create_string(self.remoteCall, @"/System/Library/PrivateFrameworks/SpringBoardFoundation.framework");
             if (sbfPath) {
                 uint64_t bundle = remote_msg(self.remoteCall, bundleClass, ds_remote_sel(self.remoteCall, "bundleWithPath:"), sbfPath, 0, 0, 0);
                 if (bundle) {
