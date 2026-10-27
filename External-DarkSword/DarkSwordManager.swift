@@ -175,12 +175,12 @@ final class DarkSwordManager: ObservableObject {
         static let aovCameraHeight = 1.0
         static let aovRenderMode = "internal"
         static let freeFireProcess = "FreeFire"
-        static let freeFireESPEnabled = false
-        static let freeFireShowsLine = false
-        static let freeFireShowsBox = false
-        static let freeFireShowsHealth = false
-        static let freeFireShowsName = false
-        static let freeFireShowsDistance = false
+        static let freeFireESPEnabled = true
+        static let freeFireShowsLine = true
+        static let freeFireShowsBox = true
+        static let freeFireShowsHealth = true
+        static let freeFireShowsName = true
+        static let freeFireShowsDistance = true
     }
 
     private static let aovCameraHeightMinValue: Double = 1
@@ -732,9 +732,13 @@ final class DarkSwordManager: ObservableObject {
                 || process.lowercased().contains("freefire")
 
             var sbInstance: RemoteCall? = nil
-            if isAoVProcess && self.aovRenderMode == "springboard" {
+            if (isAoVProcess || isFreeFireProcess) && self.aovRenderMode == "springboard" {
                 DispatchQueue.main.async {
-                    self.aovStatus = "Connecting SpringBoard..."
+                    if isAoVProcess {
+                        self.aovStatus = "Connecting SpringBoard..."
+                    } else {
+                        self.freeFireStatus = "Connecting SpringBoard..."
+                    }
                 }
                 sbInstance = self.ensureSpringBoardRemoteCall()
                 if sbInstance == nil {
@@ -807,9 +811,13 @@ final class DarkSwordManager: ObservableObject {
                         self.syncAoVESPOptions()
                         manager.runLoop()
                     } else if let instance, isFreeFireProcess {
-                        let manager = FreeFireManager(remoteCall: instance)
+                        let manager = FreeFireManager(
+                            remoteCall: instance,
+                            overlayRemoteCall: sbInstance
+                        )
                         self.freeFireManager = manager
-                        self.freeFireStatus = "Connected to \(process)"
+                        let modeDesc = (sbInstance != nil) ? "External SpringBoard" : "Internal"
+                        self.freeFireStatus = "Connected to \(process) (\(modeDesc))"
                         self.isOpeningFreeFire = false
                         self.syncFreeFireESPOptions()
                         manager.diagnosticsHandler = { [weak self] message in
@@ -1056,6 +1064,14 @@ final class DarkSwordManager: ObservableObject {
 
     private func syncFreeFireESPOptions() {
         guard let freeFireManager else { return }
+        if !freeFireESPEnabled && !freeFireShowsLine && !freeFireShowsBox {
+            freeFireESPEnabled = true
+            freeFireShowsLine = true
+            freeFireShowsBox = true
+            freeFireShowsHealth = true
+            freeFireShowsName = true
+            freeFireShowsDistance = true
+        }
         freeFireManager.isESPEnabled = freeFireESPEnabled
         freeFireManager.showsLine = freeFireShowsLine
         freeFireManager.showsBox = freeFireShowsBox

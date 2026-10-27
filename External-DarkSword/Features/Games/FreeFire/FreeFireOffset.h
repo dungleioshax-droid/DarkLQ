@@ -93,7 +93,7 @@ inline constexpr uint64_t kSystemString_Length = 0x10;
 inline constexpr uint64_t kSystemString_Chars = 0x14;
 
 // Il2CppClass & MethodInfo Layout
-inline constexpr uint64_t kMethodInfo_Klass = 0x20;
+inline constexpr uint64_t kMethodInfo_Klass = 0x18;
 inline constexpr uint64_t kIl2CppClass_StaticFields = 0xB8;
 inline constexpr uint64_t kIl2CppClass_Parent = 0x58;
 inline constexpr uint64_t kIl2CppClass_Name = 0x10;

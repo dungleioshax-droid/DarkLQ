@@ -553,10 +553,17 @@ static uintptr_t FindStaticFieldsBlockInKlass(RemoteCall *remoteCall,
     if (!validOffsetPtr(klass))
         return 0;
 
+    // 1. Direct offset from Il2CppClass definition (0xB8)
+    uintptr_t primaryBlock = ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_StaticFields);
+    if (validOffsetPtr(primaryBlock)) {
+        return primaryBlock;
+    }
+
+    // 2. Scan fallback
     for (uint64_t offset = 0x20; offset <= 0x280;
          offset += sizeof(uintptr_t)) {
         uintptr_t block = ReadMemorySafe<uintptr_t>(remoteCall, klass + offset);
-        if (LooksLikeGameFacadeStaticBlock(remoteCall, block))
+        if (validOffsetPtr(block) && LooksLikeGameFacadeStaticBlock(remoteCall, block))
             return block;
     }
     return 0;

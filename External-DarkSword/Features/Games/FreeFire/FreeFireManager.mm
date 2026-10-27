@@ -79,9 +79,16 @@ NS_ASSUME_NONNULL_BEGIN
 @implementation FreeFireManager
 
 - (instancetype)initWithRemoteCall:(RemoteCall *)remoteCall {
+    return [self initWithRemoteCall:remoteCall overlayRemoteCall:nil];
+}
+
+- (instancetype)initWithRemoteCall:(RemoteCall *)remoteCall
+                 overlayRemoteCall:(nullable RemoteCall *)overlayRemoteCall {
     self = [super init];
     if (self) {
         _remoteCall = remoteCall;
+        _overlayRemoteCall = overlayRemoteCall;
+        _useSpringBoardOverlay = (overlayRemoteCall != nil);
         _isESPEnabled = YES;
         _showsLine = YES;
         _showsBox = YES;
@@ -144,12 +151,19 @@ NS_ASSUME_NONNULL_BEGIN
                   if (!self.remoteWebViewOverlay.isOverlayReady) {
                       if (overlayCooldown == 0) {
                           if (!self.remoteWebViewOverlay) {
+                              RemoteCall *callForOverlay =
+                                  self.overlayRemoteCall ?: self.remoteCall;
+                              BOOL isSpringBoard =
+                                  (self.overlayRemoteCall != nil) ||
+                                  self.useSpringBoardOverlay;
                               self.remoteWebViewOverlay =
                                   [[RemoteWebViewOverlay alloc]
-                                      initWithRemoteCall:self.remoteCall];
+                                      initWithRemoteCall:callForOverlay
+                                           isSpringBoard:isSpringBoard];
                           }
                           if ([self.remoteWebViewOverlay setupBaseOverlay]) {
-                              LOG(@"[FreeFire] WKWebView overlay setup done.");
+                              LOG(@"[FreeFire] Overlay setup done (%s).",
+                                  self.remoteWebViewOverlay.isSpringBoard ? "SpringBoard" : "Internal");
                           } else {
                               overlayCooldown = 50; // Throttle retry to ~0.5s
                           }
@@ -158,6 +172,7 @@ NS_ASSUME_NONNULL_BEGIN
                       }
                   }
 
+                  CFAbsoluteTime frameStart = CFAbsoluteTimeGetCurrent();
                   if (self.isESPEnabled) {
                       [self updateSnapshot:self.remoteCall];
                   }
@@ -168,9 +183,15 @@ NS_ASSUME_NONNULL_BEGIN
                   } else if (!self.isESPEnabled) {
                       [self reportStatus:@"ESP is off: enable Player ESP in the overlay menu"];
                   }
+
+                  CFAbsoluteTime frameEnd = CFAbsoluteTimeGetCurrent();
+                  double elapsed = frameEnd - frameStart;
+                  double targetInterval = 1.0 / 60.0;
+                  if (elapsed < targetInterval) {
+                      usleep((useconds_t)((targetInterval - elapsed) * 1000000.0));
+                  }
               }
           }
-          usleep(10000); // ~100 FPS loop
       }
       LOG(@"[FreeFire] Snapshot loop stopped.");
     });
@@ -469,10 +490,14 @@ NS_ASSUME_NONNULL_BEGIN
         if (Il2CppKlassNameIs(remoteCall, candidate, "GameFacade")) {
             staticFields =
                 FindStaticFieldsBlockInKlass(remoteCall, candidate);
+            if (staticFields != 0) {
+                break;
+            }
         }
         if (staticFields == 0 &&
             LooksLikeGameFacadeStaticBlock(remoteCall, candidate)) {
             staticFields = candidate;
+            break;
         }
     }
 
@@ -1025,7 +1050,9 @@ NS_ASSUME_NONNULL_BEGIN
         snapshot.screenX = screenX;
         snapshot.screenY = screenY;
         snapshot.visible = YES;
-        snapshot.onScreen = IsScreenPointInside(screenX, screenY, sw, sh);
+        BOOL onScreen = IsScreenPointInside(screenX, screenY, sw, sh) ||
+                        (headVisible && IsScreenPointInside(headSX, headSY, sw, sh));
+        snapshot.onScreen = onScreen;
         snapshot.distance = distance;
 
         if (headVisible && footVisible) {
@@ -1036,14 +1063,31 @@ NS_ASSUME_NONNULL_BEGIN
 
             CGFloat boxHeight = fabs(footSY - headSY);
             CGFloat boxWidth = boxHeight * 0.55;
-            snapshot.boxX = screenX - boxWidth / 2.0;
-            snapshot.boxY = headSY;
+            CGFloat centerX = (headSX + footSX) * 0.5;
+            snapshot.boxX = centerX - boxWidth / 2.0;
+            snapshot.boxY = MIN(headSY, footSY);
             snapshot.boxW = boxWidth;
             snapshot.boxH = boxHeight;
         }
 
         [entities addObject:snapshot];
     }
+
+    [entities sortUsingComparator:^NSComparisonResult(FreeFireEntitySnapshot *a, FreeFireEntitySnapshot *b) {
+        if (a.onScreen && !b.onScreen) return NSOrderedAscending;
+        if (!a.onScreen && b.onScreen) return NSOrderedDescending;
+        if (a.distance < b.distance) return NSOrderedAscending;
+        if (a.distance > b.distance) return NSOrderedDescending;
+        return NSOrderedSame;
+    }];
+    if (entities.count > 5) {
+        [entities removeObjectsInRange:NSMakeRange(5, entities.count - 5)];
+    }
+    [entities sortUsingComparator:^NSComparisonResult(FreeFireEntitySnapshot *a, FreeFireEntitySnapshot *b) {
+        if (a.actorAddress < b.actorAddress) return NSOrderedAscending;
+        if (a.actorAddress > b.actorAddress) return NSOrderedDescending;
+        return NSOrderedSame;
+    }];
 
     @synchronized(self) {
         self.viewProjectionData = [NSData dataWithBytes:viewProjection

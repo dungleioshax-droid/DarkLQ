@@ -11,6 +11,8 @@ NS_ASSUME_NONNULL_BEGIN
 @interface FreeFireManager : NSObject
 
 @property(nonatomic, strong) RemoteCall *remoteCall;
+@property(nonatomic, strong, nullable) RemoteCall *overlayRemoteCall;
+@property(nonatomic, assign) BOOL useSpringBoardOverlay;
 @property(nonatomic, assign) uintptr_t binaryBase;
 @property(nonatomic, assign) BOOL isESPEnabled;
 @property(nonatomic, assign) BOOL showsLine;
@@ -22,6 +24,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, copy, nullable) void (^diagnosticsHandler)(NSString *message);
 
 - (instancetype)initWithRemoteCall:(RemoteCall *)remoteCall;
+- (instancetype)initWithRemoteCall:(RemoteCall *)remoteCall
+                 overlayRemoteCall:(nullable RemoteCall *)overlayRemoteCall;
 
 - (void)runLoop;
 - (void)stopLoop;
