@@ -739,15 +739,21 @@ static constexpr int kMaxHackMapWorldActors = 128;
             entity.boxH = boxHeight + boxPaddingY * 2.0;
         }
 
+        BOOL onScreen = IsScreenPointInside(entity.screenX, entity.screenY, sw, sh) ||
+                        IsScreenPointInside(entity.headX, entity.headY, sw, sh);
+        entity.onScreen = onScreen;
+
         [entities addObject:entity];
     }
 
+    [entities sortUsingComparator:^NSComparisonResult(AoVEntitySnapshot *a, AoVEntitySnapshot *b) {
+        if (a.onScreen && !b.onScreen) return NSOrderedAscending;
+        if (!a.onScreen && b.onScreen) return NSOrderedDescending;
+        if (a.distance < b.distance) return NSOrderedAscending;
+        if (a.distance > b.distance) return NSOrderedDescending;
+        return NSOrderedSame;
+    }];
     if (entities.count > 5) {
-        [entities sortUsingComparator:^NSComparisonResult(AoVEntitySnapshot *a, AoVEntitySnapshot *b) {
-            if (a.distance < b.distance) return NSOrderedAscending;
-            if (a.distance > b.distance) return NSOrderedDescending;
-            return NSOrderedSame;
-        }];
         [entities removeObjectsInRange:NSMakeRange(5, entities.count - 5)];
     }
     [entities sortUsingComparator:^NSComparisonResult(AoVEntitySnapshot *a, AoVEntitySnapshot *b) {

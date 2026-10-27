@@ -39,8 +39,8 @@ static Vector3 WorldToViewportPoint(Vector3 world, const float *matrix) {
               matrix[13];
     float w = matrix[3] * world.x + matrix[7] * world.y + matrix[11] * world.z +
               matrix[15];
-    if (fabsf(w) < 1.0e-6f)
-        return Vector3(0.0f, 0.0f, w);
+    if (w <= 0.001f || !std::isfinite(w))
+        return Vector3(0.0f, 0.0f, -1.0f);
 
     return Vector3(x / w * 0.5f + 0.5f, y / w * 0.5f + 0.5f, w);
 }
@@ -50,19 +50,12 @@ static BOOL ProjectToOverlayPoint(Vector3 world, const float *viewProjection,
                                   CGFloat *outX, CGFloat *outY) {
     Vector3 viewport = WorldToViewportPoint(world, viewProjection);
     if (!std::isfinite(viewport.x) || !std::isfinite(viewport.y) ||
-        !std::isfinite(viewport.z)) {
+        !std::isfinite(viewport.z) || viewport.z <= 0.001f) {
         return NO;
     }
 
-    CGFloat x = 0.0;
-    CGFloat y = 0.0;
-    if (viewport.z > 0.0f) {
-        x = viewport.x * screenWidth;
-        y = (1.0f - viewport.y) * screenHeight;
-    } else {
-        x = (1.0f - viewport.x) * screenWidth;
-        y = viewport.y * screenHeight;
-    }
+    CGFloat x = viewport.x * screenWidth;
+    CGFloat y = (1.0f - viewport.y) * screenHeight;
 
     if (!std::isfinite((double)x) || !std::isfinite((double)y)) {
         return NO;

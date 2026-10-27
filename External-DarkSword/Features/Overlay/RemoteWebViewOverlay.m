@@ -440,19 +440,19 @@ typedef struct {
 } SpringBoardESPSlot;
 
 static inline BOOL IsFrameSignificantlyDifferent(CGRect a, CGRect b) {
-    return fabs(a.origin.x - b.origin.x) > 0.01 ||
-           fabs(a.origin.y - b.origin.y) > 0.01 ||
-           fabs(a.size.width - b.size.width) > 0.01 ||
-           fabs(a.size.height - b.size.height) > 0.01;
+    return fabs(a.origin.x - b.origin.x) > 0.05 ||
+           fabs(a.origin.y - b.origin.y) > 0.05 ||
+           fabs(a.size.width - b.size.width) > 0.05 ||
+           fabs(a.size.height - b.size.height) > 0.05;
 }
 
 static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
                                                 CGFloat angleA, CGFloat angleB,
                                                 CGPoint centerA, CGPoint centerB) {
-    return fabs(lenA - lenB) > 0.01 ||
-           fabs(angleA - angleB) > 0.0001 ||
-           fabs(centerA.x - centerB.x) > 0.01 ||
-           fabs(centerA.y - centerB.y) > 0.01;
+    return fabs(lenA - lenB) > 0.05 ||
+           fabs(angleA - angleB) > 0.001 ||
+           fabs(centerA.x - centerB.x) > 0.05 ||
+           fabs(centerA.y - centerB.y) > 0.05;
 }
 
 @implementation RemoteWebViewOverlay {
@@ -1399,7 +1399,7 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
         }
 
         static CFAbsoluteTime lastESPUpdate = 0;
-        if (now - lastESPUpdate < 0.008) { // allow full 60 FPS without dropping frames
+        if (now - lastESPUpdate < 0.016) { // 60 FPS cap to eliminate SpringBoard main-thread watchdog respring
             return YES;
         }
         lastESPUpdate = now;
@@ -1420,193 +1420,122 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
                 CGFloat hx = [target[@"headX"] doubleValue];
                 CGFloat hy = [target[@"headY"] doubleValue];
 
-                if (visible) {
-                    CGPoint endPoint = CGPointZero;
+                if (visible && onScreen) {
+                    // 1. Box (exact internal style: white 0.70 alpha, width 1.25)
+                    BOOL hasBox = [target[@"hasBox"] boolValue];
+                    CGFloat bx = [target[@"boxX"] doubleValue];
+                    CGFloat by = [target[@"boxY"] doubleValue];
+                    CGFloat bw = [target[@"boxW"] doubleValue];
+                    CGFloat bh = [target[@"boxH"] doubleValue];
 
-                    if (onScreen) {
-                        // 1. Box (exact internal style: white 0.70 alpha, width 1.25)
-                        BOOL hasBox = [target[@"hasBox"] boolValue];
-                        CGFloat bx = [target[@"boxX"] doubleValue];
-                        CGFloat by = [target[@"boxY"] doubleValue];
-                        CGFloat bw = [target[@"boxW"] doubleValue];
-                        CGFloat bh = [target[@"boxH"] doubleValue];
-
-                        if (hasBox && bw > 5.0 && bh > 5.0 && slot->boxView) {
-                            CGRect newBox = CGRectMake(bx, by, bw, bh);
-                            if (!slot->isBoxVisible) {
-                                ds_remote_set_u64_on_main(self.remoteCall, slot->boxView, "setHidden:", 0);
-                                slot->isBoxVisible = YES;
-                            }
-                            if (IsFrameSignificantlyDifferent(slot->lastBoxFrame, newBox)) {
-                                ds_remote_set_rect_on_main(self.remoteCall, slot->boxView, "setFrame:", newBox);
-                                slot->lastBoxFrame = newBox;
-                            }
-                        } else if (slot->isBoxVisible && slot->boxView) {
-                            ds_remote_set_u64_on_main(self.remoteCall, slot->boxView, "setHidden:", 1);
-                            slot->isBoxVisible = NO;
+                    if (hasBox && bw > 5.0 && bh > 5.0 && slot->boxView) {
+                        CGRect newBox = CGRectMake(bx, by, bw, bh);
+                        if (!slot->isBoxVisible) {
+                            ds_remote_set_u64_on_main(self.remoteCall, slot->boxView, "setHidden:", 0);
+                            slot->isBoxVisible = YES;
                         }
-
-                        // 2. Health Bar (exact internal style: barY = box.y - 7, height 5, fill height 4, dynamic colors)
-                        BOOL drawHealth = [target[@"drawHealth"] boolValue];
-                        int hp = [target[@"hp"] intValue];
-                        int maxHp = MAX([target[@"maxHp"] intValue], 1);
-                        if (drawHealth && hasBox && bw > 5.0 && slot->hpBgView && slot->hpFillView) {
-                            CGFloat hpRatio = OverlayClamp((CGFloat)hp / (CGFloat)maxHp, 0.0, 1.0);
-                            CGRect newHpBg = CGRectMake(bx - 0.5, by - 7.0, bw + 1.0, 5.0);
-                            CGRect newHpFill = CGRectMake(0, 0.5, bw * hpRatio, 4.0);
-
-                            if (!slot->isHpVisible) {
-                                ds_remote_set_u64_on_main(self.remoteCall, slot->hpBgView, "setHidden:", 0);
-                                slot->isHpVisible = YES;
-                            }
-                            if (IsFrameSignificantlyDifferent(slot->lastHpBgFrame, newHpBg)) {
-                                ds_remote_set_rect_on_main(self.remoteCall, slot->hpBgView, "setFrame:", newHpBg);
-                                slot->lastHpBgFrame = newHpBg;
-                            }
-                            if (IsFrameSignificantlyDifferent(slot->lastHpFillFrame, newHpFill)) {
-                                ds_remote_set_rect_on_main(self.remoteCall, slot->hpFillView, "setFrame:", newHpFill);
-                                slot->lastHpFillFrame = newHpFill;
-                            }
-
-                            // Dynamic Health Color (< 30%: Red, <= 60%: Yellow, > 60%: Green)
-                            int colorState = (hpRatio < 0.3) ? 1 : ((hpRatio <= 0.6) ? 2 : 3);
-                            if (colorState != slot->lastHpColorState) {
-                                uint64_t targetColor = (colorState == 1) ? s_sbRedColor : ((colorState == 2) ? s_sbYellowColor : s_sbGreenColor);
-                                if (targetColor) {
-                                    ds_perform_on_springboard_main(self.remoteCall, slot->hpFillView, ds_remote_sel(self.remoteCall, "setBackgroundColor:"), targetColor, YES);
-                                }
-                                slot->lastHpColorState = colorState;
-                            }
-                        } else if (slot->isHpVisible && slot->hpBgView) {
-                            ds_remote_set_u64_on_main(self.remoteCall, slot->hpBgView, "setHidden:", 1);
-                            slot->isHpVisible = NO;
+                        if (IsFrameSignificantlyDifferent(slot->lastBoxFrame, newBox)) {
+                            ds_remote_set_rect_on_main(self.remoteCall, slot->boxView, "setFrame:", newBox);
+                            slot->lastBoxFrame = newBox;
                         }
-
-                        // 3. Distance Label (exact internal style: [ 15m ] in Yellow, below hero feet)
-                        BOOL drawDist = [target[@"drawDistance"] boolValue];
-                        int dist = [target[@"distance"] intValue];
-                        CGFloat footY = hasBox ? (by + bh) : sy;
-                        if (drawDist && slot->distLabel) {
-                            CGFloat distW = 80.0;
-                            CGRect newDistFrame = CGRectMake(sx - distW * 0.5, footY + 4.0, distW, 14.0);
-                            if (!slot->isDistVisible) {
-                                ds_remote_set_u64_on_main(self.remoteCall, slot->distLabel, "setHidden:", 0);
-                                slot->isDistVisible = YES;
-                            }
-                            if (IsFrameSignificantlyDifferent(slot->lastDistFrame, newDistFrame)) {
-                                ds_remote_set_rect_on_main(self.remoteCall, slot->distLabel, "setFrame:", newDistFrame);
-                                slot->lastDistFrame = newDistFrame;
-                            }
-                            if (dist != slot->lastDistance || slot->lastDistUpdate == 0 || (now - slot->lastDistUpdate >= 0.08)) {
-                                slot->lastDistance = dist;
-                                slot->lastDistUpdate = now;
-                                NSString *distText = [NSString stringWithFormat:@"[ %dm ]", dist];
-                                ds_remote_set_text_on_main(self.remoteCall, slot->distLabel, distText);
-                            }
-                        } else if (slot->isDistVisible && slot->distLabel) {
-                            ds_remote_set_u64_on_main(self.remoteCall, slot->distLabel, "setHidden:", 1);
-                            slot->isDistVisible = NO;
-                        }
-
-                        // 4. Hero Name Label (exact internal style: White bold text below distance)
-                        BOOL drawName = [target[@"drawName"] boolValue];
-                        NSString *name = target[@"name"] ?: @"";
-                        if (drawName && name.length > 0 && slot->nameLabel) {
-                            CGFloat nameW = 120.0;
-                            CGFloat nameY = drawDist ? (footY + 18.0) : (footY + 6.0);
-                            CGRect newNameFrame = CGRectMake(sx - nameW * 0.5, nameY, nameW, 17.0);
-                            if (!slot->isNameVisible) {
-                                ds_remote_set_u64_on_main(self.remoteCall, slot->nameLabel, "setHidden:", 0);
-                                slot->isNameVisible = YES;
-                            }
-                            if (IsFrameSignificantlyDifferent(slot->lastNameFrame, newNameFrame)) {
-                                ds_remote_set_rect_on_main(self.remoteCall, slot->nameLabel, "setFrame:", newNameFrame);
-                                slot->lastNameFrame = newNameFrame;
-                            }
-                            if (strncmp(slot->lastNameBuf, name.UTF8String, sizeof(slot->lastNameBuf)) != 0) {
-                                strncpy(slot->lastNameBuf, name.UTF8String, sizeof(slot->lastNameBuf) - 1);
-                                slot->lastNameBuf[sizeof(slot->lastNameBuf) - 1] = '\0';
-                                ds_remote_set_text_on_main(self.remoteCall, slot->nameLabel, name);
-                            }
-                        } else if (slot->isNameVisible && slot->nameLabel) {
-                            ds_remote_set_u64_on_main(self.remoteCall, slot->nameLabel, "setHidden:", 1);
-                            slot->isNameVisible = NO;
-                        }
-
-                        // Line target: Top of box or sy - 15 (matching internal style: endY = sy - 15)
-                        CGFloat endY = hasBox ? (by - 7.0) : (sy - 15.0);
-                        endPoint = CGPointMake(sx, endY);
-                    } else {
-                        // Enemy is off-screen: hide box and HP bar
-                        if (slot->isBoxVisible && slot->boxView) {
-                            ds_remote_set_u64_on_main(self.remoteCall, slot->boxView, "setHidden:", 1);
-                            slot->isBoxVisible = NO;
-                        }
-                        if (slot->isHpVisible && slot->hpBgView) {
-                            ds_remote_set_u64_on_main(self.remoteCall, slot->hpBgView, "setHidden:", 1);
-                            slot->isHpVisible = NO;
-                        }
-
-                        // Clamp ray from top-center to target along screen boundary
-                        CGPoint targetPoint = CGPointMake(sx, sy);
-                        endPoint = ClampRayToScreen(startPoint, targetPoint, sw, sh, 25.0);
-
-                        // Distance Badge at screen edge
-                        BOOL drawDist = [target[@"drawDistance"] boolValue];
-                        int dist = [target[@"distance"] intValue];
-                        if (drawDist && slot->distLabel) {
-                            CGFloat distW = 70.0;
-                            CGFloat lx = OverlayClamp(endPoint.x - distW * 0.5, 5.0, sw - distW - 5.0);
-                            CGFloat ly = OverlayClamp(endPoint.y + 6.0, 35.0, sh - 30.0);
-                            CGRect newDistFrame = CGRectMake(lx, ly, distW, 14.0);
-                            if (!slot->isDistVisible) {
-                                ds_remote_set_u64_on_main(self.remoteCall, slot->distLabel, "setHidden:", 0);
-                                slot->isDistVisible = YES;
-                            }
-                            if (IsFrameSignificantlyDifferent(slot->lastDistFrame, newDistFrame)) {
-                                ds_remote_set_rect_on_main(self.remoteCall, slot->distLabel, "setFrame:", newDistFrame);
-                                slot->lastDistFrame = newDistFrame;
-                            }
-                            if (dist != slot->lastDistance || slot->lastDistUpdate == 0 || (now - slot->lastDistUpdate >= 0.08)) {
-                                slot->lastDistance = dist;
-                                slot->lastDistUpdate = now;
-                                NSString *distText = [NSString stringWithFormat:@"[ %dm ]", dist];
-                                ds_remote_set_text_on_main(self.remoteCall, slot->distLabel, distText);
-                            }
-                        } else if (slot->isDistVisible && slot->distLabel) {
-                            ds_remote_set_u64_on_main(self.remoteCall, slot->distLabel, "setHidden:", 1);
-                            slot->isDistVisible = NO;
-                        }
-
-                        // Name Badge at screen edge
-                        BOOL drawName = [target[@"drawName"] boolValue];
-                        NSString *name = target[@"name"] ?: @"";
-                        if (drawName && name.length > 0 && slot->nameLabel) {
-                            CGFloat nameW = 100.0;
-                            CGFloat lx = OverlayClamp(endPoint.x - nameW * 0.5, 5.0, sw - nameW - 5.0);
-                            CGFloat ly = OverlayClamp(endPoint.y + 20.0, 49.0, sh - 15.0);
-                            CGRect newNameFrame = CGRectMake(lx, ly, nameW, 15.0);
-                            if (!slot->isNameVisible) {
-                                ds_remote_set_u64_on_main(self.remoteCall, slot->nameLabel, "setHidden:", 0);
-                                slot->isNameVisible = YES;
-                            }
-                            if (IsFrameSignificantlyDifferent(slot->lastNameFrame, newNameFrame)) {
-                                ds_remote_set_rect_on_main(self.remoteCall, slot->nameLabel, "setFrame:", newNameFrame);
-                                slot->lastNameFrame = newNameFrame;
-                            }
-                            if (strncmp(slot->lastNameBuf, name.UTF8String, sizeof(slot->lastNameBuf)) != 0) {
-                                strncpy(slot->lastNameBuf, name.UTF8String, sizeof(slot->lastNameBuf) - 1);
-                                slot->lastNameBuf[sizeof(slot->lastNameBuf) - 1] = '\0';
-                                ds_remote_set_text_on_main(self.remoteCall, slot->nameLabel, name);
-                            }
-                        } else if (slot->isNameVisible && slot->nameLabel) {
-                            ds_remote_set_u64_on_main(self.remoteCall, slot->nameLabel, "setHidden:", 1);
-                            slot->isNameVisible = NO;
-                        }
+                    } else if (slot->isBoxVisible && slot->boxView) {
+                        ds_remote_set_u64_on_main(self.remoteCall, slot->boxView, "setHidden:", 1);
+                        slot->isBoxVisible = NO;
                     }
 
-                    // 5. Snapline (exact internal style: white 0.70 alpha, width 1.2 from (sw/2, 38) to endPoint)
+                    // 2. Health Bar (exact internal style: barY = box.y - 7, height 5, fill height 4, dynamic colors)
+                    BOOL drawHealth = [target[@"drawHealth"] boolValue];
+                    int hp = [target[@"hp"] intValue];
+                    int maxHp = MAX([target[@"maxHp"] intValue], 1);
+                    if (drawHealth && hasBox && bw > 5.0 && slot->hpBgView && slot->hpFillView) {
+                        CGFloat hpRatio = OverlayClamp((CGFloat)hp / (CGFloat)maxHp, 0.0, 1.0);
+                        CGRect newHpBg = CGRectMake(bx - 0.5, by - 7.0, bw + 1.0, 5.0);
+                        CGRect newHpFill = CGRectMake(0, 0.5, bw * hpRatio, 4.0);
+
+                        if (!slot->isHpVisible) {
+                            ds_remote_set_u64_on_main(self.remoteCall, slot->hpBgView, "setHidden:", 0);
+                            slot->isHpVisible = YES;
+                        }
+                        if (IsFrameSignificantlyDifferent(slot->lastHpBgFrame, newHpBg)) {
+                            ds_remote_set_rect_on_main(self.remoteCall, slot->hpBgView, "setFrame:", newHpBg);
+                            slot->lastHpBgFrame = newHpBg;
+                        }
+                        if (IsFrameSignificantlyDifferent(slot->lastHpFillFrame, newHpFill)) {
+                            ds_remote_set_rect_on_main(self.remoteCall, slot->hpFillView, "setFrame:", newHpFill);
+                            slot->lastHpFillFrame = newHpFill;
+                        }
+
+                        // Dynamic Health Color (< 30%: Red, <= 60%: Yellow, > 60%: Green)
+                        int colorState = (hpRatio < 0.3) ? 1 : ((hpRatio <= 0.6) ? 2 : 3);
+                        if (colorState != slot->lastHpColorState) {
+                            uint64_t targetColor = (colorState == 1) ? s_sbRedColor : ((colorState == 2) ? s_sbYellowColor : s_sbGreenColor);
+                            if (targetColor) {
+                                ds_perform_on_springboard_main(self.remoteCall, slot->hpFillView, ds_remote_sel(self.remoteCall, "setBackgroundColor:"), targetColor, YES);
+                            }
+                            slot->lastHpColorState = colorState;
+                        }
+                    } else if (slot->isHpVisible && slot->hpBgView) {
+                        ds_remote_set_u64_on_main(self.remoteCall, slot->hpBgView, "setHidden:", 1);
+                        slot->isHpVisible = NO;
+                    }
+
+                    // 3. Distance Label (exact internal style: [ 15m ] in Yellow, below hero feet)
+                    BOOL drawDist = [target[@"drawDistance"] boolValue];
+                    int dist = [target[@"distance"] intValue];
+                    CGFloat footY = hasBox ? (by + bh) : sy;
+                    if (drawDist && slot->distLabel) {
+                        CGFloat distW = 80.0;
+                        CGRect newDistFrame = CGRectMake(sx - distW * 0.5, footY + 4.0, distW, 14.0);
+                        if (!slot->isDistVisible) {
+                            ds_remote_set_u64_on_main(self.remoteCall, slot->distLabel, "setHidden:", 0);
+                            slot->isDistVisible = YES;
+                        }
+                        if (IsFrameSignificantlyDifferent(slot->lastDistFrame, newDistFrame)) {
+                            ds_remote_set_rect_on_main(self.remoteCall, slot->distLabel, "setFrame:", newDistFrame);
+                            slot->lastDistFrame = newDistFrame;
+                        }
+                        if ((dist != slot->lastDistance && (now - slot->lastDistUpdate >= 0.35)) || slot->lastDistUpdate == 0) {
+                            slot->lastDistance = dist;
+                            slot->lastDistUpdate = now;
+                            NSString *distText = [NSString stringWithFormat:@"[ %dm ]", dist];
+                            ds_remote_set_text_on_main(self.remoteCall, slot->distLabel, distText);
+                        }
+                    } else if (slot->isDistVisible && slot->distLabel) {
+                        ds_remote_set_u64_on_main(self.remoteCall, slot->distLabel, "setHidden:", 1);
+                        slot->isDistVisible = NO;
+                    }
+
+                    // 4. Hero Name Label (exact internal style: White bold text below distance)
+                    BOOL drawName = [target[@"drawName"] boolValue];
+                    NSString *name = target[@"name"] ?: @"";
+                    if (drawName && name.length > 0 && slot->nameLabel) {
+                        CGFloat nameW = 120.0;
+                        CGFloat nameY = drawDist ? (footY + 18.0) : (footY + 6.0);
+                        CGRect newNameFrame = CGRectMake(sx - nameW * 0.5, nameY, nameW, 17.0);
+                        if (!slot->isNameVisible) {
+                            ds_remote_set_u64_on_main(self.remoteCall, slot->nameLabel, "setHidden:", 0);
+                            slot->isNameVisible = YES;
+                        }
+                        if (IsFrameSignificantlyDifferent(slot->lastNameFrame, newNameFrame)) {
+                            ds_remote_set_rect_on_main(self.remoteCall, slot->nameLabel, "setFrame:", newNameFrame);
+                            slot->lastNameFrame = newNameFrame;
+                        }
+                        if (strncmp(slot->lastNameBuf, name.UTF8String, sizeof(slot->lastNameBuf)) != 0) {
+                            strncpy(slot->lastNameBuf, name.UTF8String, sizeof(slot->lastNameBuf) - 1);
+                            slot->lastNameBuf[sizeof(slot->lastNameBuf) - 1] = '\0';
+                            ds_remote_set_text_on_main(self.remoteCall, slot->nameLabel, name);
+                        }
+                    } else if (slot->isNameVisible && slot->nameLabel) {
+                        ds_remote_set_u64_on_main(self.remoteCall, slot->nameLabel, "setHidden:", 1);
+                        slot->isNameVisible = NO;
+                    }
+
+                    // 5. Snapline (exact internal style: white 0.70 alpha, width 1.2 from (sw/2, 38) straight to top-center of box / head)
                     BOOL drawLine = [target[@"drawLine"] boolValue];
+                    CGFloat topCenterX = hasBox ? (bx + bw * 0.5) : (hx > 0.0 ? hx : sx);
+                    CGFloat topCenterY = (hasBox && by > 0.0) ? (by - 6.0) : (hy > 0.0 ? hy : (sy - 15.0));
+                    CGPoint endPoint = CGPointMake(topCenterX, topCenterY);
+
                     CGFloat dx = endPoint.x - startPoint.x;
                     CGFloat dy = endPoint.y - startPoint.y;
                     CGFloat lineLen = hypot(dx, dy);
@@ -1633,13 +1562,13 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
                             slot->lastLineCenter = midPoint;
                         }
 
-                        // 6. Snapline tip Green Dot (exact internal style: arc(sx, endY, 3, 0, Math.PI * 2) in green)
+                        // 6. Snapline tip Green Dot (exact internal style: arc in green at endPoint)
                         if (slot->lineDotView) {
                             if (!slot->isDotVisible) {
                                 ds_remote_set_u64_on_main(self.remoteCall, slot->lineDotView, "setHidden:", 0);
                                 slot->isDotVisible = YES;
                             }
-                            if (fabs(slot->lastDotCenter.x - endPoint.x) > 0.01 || fabs(slot->lastDotCenter.y - endPoint.y) > 0.01) {
+                            if (fabs(slot->lastDotCenter.x - endPoint.x) > 0.05 || fabs(slot->lastDotCenter.y - endPoint.y) > 0.05) {
                                 ds_remote_set_point_on_main(self.remoteCall, slot->lineDotView, "setCenter:", endPoint);
                                 slot->lastDotCenter = endPoint;
                             }
@@ -1666,18 +1595,27 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
             if (slot->isBoxVisible && slot->boxView) {
                 ds_remote_set_u64_on_main(self.remoteCall, slot->boxView, "setHidden:", 1);
                 slot->isBoxVisible = NO;
+                slot->lastBoxFrame = CGRectZero;
             }
             if (slot->isHpVisible && slot->hpBgView) {
                 ds_remote_set_u64_on_main(self.remoteCall, slot->hpBgView, "setHidden:", 1);
                 slot->isHpVisible = NO;
+                slot->lastHpBgFrame = CGRectZero;
+                slot->lastHpFillFrame = CGRectZero;
+                slot->lastHpColorState = 0;
             }
             if (slot->isDistVisible && slot->distLabel) {
                 ds_remote_set_u64_on_main(self.remoteCall, slot->distLabel, "setHidden:", 1);
                 slot->isDistVisible = NO;
+                slot->lastDistFrame = CGRectZero;
+                slot->lastDistance = -1;
+                slot->lastDistUpdate = 0;
             }
             if (slot->isNameVisible && slot->nameLabel) {
                 ds_remote_set_u64_on_main(self.remoteCall, slot->nameLabel, "setHidden:", 1);
                 slot->isNameVisible = NO;
+                slot->lastNameFrame = CGRectZero;
+                slot->lastNameBuf[0] = '\0';
             }
             if (slot->isLineVisible && slot->lineView) {
                 ds_remote_set_u64_on_main(self.remoteCall, slot->lineView, "setHidden:", 1);
