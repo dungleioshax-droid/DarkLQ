@@ -1,14 +1,26 @@
 <!doctype html>
-<html lang="en">
+<html lang="vi">
   <head>
     <meta charset="UTF-8" />
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
     />
+    <meta name="theme-color" content="#080814" />
     <style>
       :root {
         color-scheme: dark;
+        --bg: #090916;
+        --panel: #111123;
+        --panel-raised: #17172d;
+        --line: rgba(150, 139, 255, 0.2);
+        --text: #f4f1ff;
+        --muted: #9290b1;
+        --violet: #a78bfa;
+        --cyan: #5ce8ff;
+        --green: #63f5bb;
+        --red: #ff668d;
+        --glow: 0 0 22px rgba(167, 139, 250, 0.12);
       }
       * {
         box-sizing: border-box;
@@ -18,426 +30,360 @@
       }
       html,
       body {
-        width: 100vw;
-        height: 100vh;
+        width: 100%;
+        height: 100%;
         margin: 0;
         overflow: hidden;
         background: transparent;
-        font-family:
-          -apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, Arial,
-          sans-serif;
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, Arial, sans-serif;
+      }
+      button {
+        color: inherit;
+        font: inherit;
+        cursor: pointer;
       }
       #menu {
         position: fixed;
         left: 50%;
         top: 50%;
-        width: 60vw;
-        height: 70vh;
+        width: min(430px, calc(100vw - 28px));
+        height: min(650px, 82vh);
+        height: min(650px, 82dvh);
+        min-height: 360px;
         transform: translate(-50%, -50%);
         overflow: hidden;
-        border: 1px solid rgba(73, 255, 151, 0.78);
-        border-radius: 8px;
-        background: #07120e;
-        color: #e5ffed;
-        box-shadow: 0 14px 38px rgba(0, 0, 0, 0.52);
+        border: 1px solid rgba(167, 139, 250, 0.55);
+        border-radius: 18px;
+        background:
+          radial-gradient(ellipse at 92% 0%, rgba(92, 232, 255, 0.09), transparent 36%),
+          radial-gradient(ellipse at 0% 42%, rgba(167, 139, 250, 0.08), transparent 38%),
+          var(--bg);
+        color: var(--text);
+        box-shadow: 0 18px 56px rgba(0, 0, 0, 0.62), var(--glow);
       }
       #header {
-        height: 48px;
-        padding: 0 12px;
+        min-height: 76px;
+        padding: 15px 16px 13px;
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 12px;
-        border-bottom: 1px solid rgba(109, 255, 173, 0.25);
-        background: #0b1d15;
+        border-bottom: 1px solid var(--line);
+        background: rgba(17, 17, 35, 0.88);
         touch-action: none;
       }
-      .title {
+      .brand {
         display: flex;
         align-items: center;
-        gap: 6px;
-        font-size: 15px;
-        font-weight: 800;
-        line-height: 18px;
+        gap: 11px;
+        min-width: 0;
       }
-      .gameBadge {
-        padding: 1px 6px;
-        border: 1px solid rgba(109, 255, 173, 0.45);
-        border-radius: 4px;
-        background: rgba(109, 255, 173, 0.12);
-        color: #9dffc3;
+      .brandMark {
+        width: 40px;
+        height: 40px;
+        flex: 0 0 auto;
+        display: grid;
+        place-items: center;
+        border: 1px solid rgba(92, 232, 255, 0.55);
+        border-radius: 12px;
+        color: var(--cyan);
+        background: linear-gradient(145deg, rgba(92, 232, 255, 0.13), rgba(167, 139, 250, 0.18));
+        box-shadow: 0 0 18px rgba(92, 232, 255, 0.11);
+      }
+      .brandMark svg { width: 22px; height: 22px; }
+      .brandTitle {
+        overflow: hidden;
+        color: var(--text);
+        font-size: 14px;
+        font-weight: 900;
+        letter-spacing: 1px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .brandSubtitle {
+        margin-top: 4px;
+        color: var(--muted);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 9px;
-        font-weight: 800;
-        letter-spacing: 0.2px;
+        font-weight: 700;
+        letter-spacing: 1.1px;
+      }
+      .headerActions { display: flex; gap: 7px; flex: 0 0 auto; }
+      .iconButton {
+        width: 34px;
+        height: 34px;
+        display: grid;
+        place-items: center;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--panel-raised);
+        color: #d9d5f3;
+        font-size: 11px;
+        font-weight: 900;
+      }
+      .iconButton:active, .tab:active, .switch:active { transform: scale(0.96); }
+      .iconButton svg { width: 16px; height: 16px; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+      #connectionStrip {
+        min-height: 34px;
+        padding: 0 16px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        border-bottom: 1px solid rgba(150, 139, 255, 0.12);
+        background: rgba(8, 8, 20, 0.68);
+        color: var(--muted);
+        font: 700 9px ui-monospace, SFMono-Regular, Menlo, monospace;
+        letter-spacing: 0.8px;
         text-transform: uppercase;
       }
-      .subtitle {
-        margin-top: 1px;
-        color: #86b99b;
-        font-size: 10px;
-        font-weight: 600;
+      .connectionLabel { display: flex; align-items: center; gap: 7px; }
+      #connectionDot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #66647c;
+        box-shadow: 0 0 0 3px rgba(102, 100, 124, 0.12);
       }
-      .headerActions {
-        display: flex;
-        gap: 6px;
-        align-items: center;
+      #connectionStrip.connected #connectionDot {
+        background: var(--green);
+        box-shadow: 0 0 10px rgba(99, 245, 187, 0.8), 0 0 0 3px rgba(99, 245, 187, 0.12);
       }
-      .iconButton {
-        width: 28px;
-        height: 28px;
-        border: 1px solid rgba(109, 255, 173, 0.36);
-        border-radius: 5px;
-        background: #10261b;
-        color: #c7ffda;
-        font-size: 14px;
-        font-weight: 800;
-      }
-      #close svg {
-        width: 16px;
-        height: 16px;
-        display: block;
-        stroke: currentColor;
-        stroke-width: 2.5;
-        stroke-linecap: round;
-        stroke-linejoin: round;
-      }
+      #connectionStrip.connected #connectionText { color: var(--green); }
       #tabs {
-        height: 39px;
+        height: 48px;
+        padding: 6px 8px;
         display: grid;
-        grid-template-columns: 1fr 1fr 1.25fr;
-        border-bottom: 1px solid rgba(109, 255, 173, 0.18);
-        background: #09170f;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 5px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(12, 12, 26, 0.96);
       }
       .tab {
-        border: 0;
-        border-right: 1px solid rgba(109, 255, 173, 0.12);
+        border: 1px solid transparent;
+        border-radius: 9px;
         background: transparent;
-        color: #81ad90;
-        font-size: 11px;
+        color: var(--muted);
+        font-size: 10px;
         font-weight: 800;
-      }
-      .tab:last-child {
-        border-right: 0;
+        letter-spacing: 0.4px;
       }
       .tab.active {
-        color: #c8ffdc;
-        background: rgba(83, 255, 147, 0.12);
-        box-shadow: inset 0 -2px #65f7a4;
-      }
-      body.game-freefire #tabs {
-        grid-template-columns: 1fr 1fr;
-      }
-      body.game-freefire .aov-only {
-        display: none !important;
+        border-color: rgba(167, 139, 250, 0.25);
+        background: linear-gradient(110deg, rgba(167, 139, 250, 0.18), rgba(92, 232, 255, 0.08));
+        color: #eee8ff;
+        box-shadow: inset 0 -2px var(--violet);
       }
       #content {
-        height: calc(100% - 87px);
+        height: calc(100% - 158px);
         overflow-y: auto;
         overscroll-behavior: contain;
         -webkit-overflow-scrolling: touch;
       }
-      #content::-webkit-scrollbar {
-        width: 6px;
-      }
-      #content::-webkit-scrollbar-thumb {
-        border-radius: 3px;
-        background: rgba(109, 255, 173, 0.55);
-      }
-      .panel {
-        display: none;
-        padding: 12px;
-      }
-      .panel.active {
-        display: block;
-      }
-      .sectionTitle {
-        margin: 2px 0 8px;
-        color: #86b99b;
-        font-size: 10px;
-        font-weight: 800;
-        letter-spacing: 0.4px;
+      #content::-webkit-scrollbar { width: 4px; }
+      #content::-webkit-scrollbar-thumb { border-radius: 3px; background: rgba(167, 139, 250, 0.45); }
+      .panel { display: none; padding: 17px 16px 20px; }
+      .panel.active { display: block; }
+      .eyebrow {
+        margin: 0 0 11px;
+        color: var(--cyan);
+        font: 800 9px ui-monospace, SFMono-Regular, Menlo, monospace;
+        letter-spacing: 1.5px;
         text-transform: uppercase;
       }
-      .row {
-        min-height: 52px;
-        padding: 9px 0;
+      .welcomeTitle { margin: 0; font-size: 22px; font-weight: 900; letter-spacing: -0.6px; }
+      .welcomeCopy { margin: 7px 0 19px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+      .statusCard {
+        padding: 15px;
+        border: 1px solid rgba(167, 139, 250, 0.23);
+        border-radius: 14px;
+        background: linear-gradient(140deg, rgba(23, 23, 45, 0.96), rgba(15, 15, 31, 0.92));
+        box-shadow: var(--glow);
+      }
+      .cardTop { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+      .cardLabel { color: var(--muted); font-size: 10px; font-weight: 700; }
+      #gameName { margin-top: 5px; font-size: 16px; font-weight: 850; }
+      .statusPill {
+        padding: 6px 8px;
+        border: 1px solid rgba(255, 102, 141, 0.26);
+        border-radius: 20px;
+        background: rgba(255, 102, 141, 0.08);
+        color: var(--red);
+        font: 800 9px ui-monospace, SFMono-Regular, Menlo, monospace;
+        letter-spacing: 0.5px;
+        white-space: nowrap;
+      }
+      .statusPill.connected { border-color: rgba(99, 245, 187, 0.28); background: rgba(99, 245, 187, 0.08); color: var(--green); }
+      .divider { height: 1px; margin: 14px 0 11px; background: rgba(150, 139, 255, 0.13); }
+      .detailRow { min-height: 27px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+      .detailLabel { color: var(--muted); font-size: 10px; }
+      .detailValue { max-width: 64%; overflow: hidden; color: #e4defd; font: 700 10px ui-monospace, SFMono-Regular, Menlo, monospace; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+      .infoNote {
+        margin-top: 13px;
+        padding: 11px 12px;
+        border-left: 2px solid rgba(92, 232, 255, 0.72);
+        border-radius: 0 9px 9px 0;
+        background: rgba(92, 232, 255, 0.055);
+        color: #aaa8c4;
+        font-size: 10px;
+        line-height: 1.5;
+      }
+      .sectionHeading { margin: 0 0 5px; font-size: 14px; font-weight: 850; }
+      .sectionCopy { margin: 0 0 14px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+      .settingRow {
+        min-height: 62px;
+        padding: 11px 0;
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 12px;
-        border-bottom: 1px solid rgba(109, 255, 173, 0.11);
+        gap: 14px;
+        border-bottom: 1px solid rgba(150, 139, 255, 0.12);
       }
-      .rowTitle {
-        color: #effff4;
-        font-size: 13px;
-        font-weight: 700;
-      }
-      .rowValue {
-        margin-top: 2px;
-        color: #85a991;
-        font-size: 10px;
-        line-height: 13px;
-      }
+      .settingTitle { color: var(--text); font-size: 12px; font-weight: 750; }
+      .settingHint { margin-top: 4px; color: var(--muted); font-size: 9px; line-height: 1.35; }
       .switch {
         position: relative;
-        width: 36px;
-        height: 21px;
+        width: 39px;
+        height: 23px;
         flex: 0 0 auto;
-        border: 1px solid #355645;
-        border-radius: 11px;
-        background: #14261b;
+        border: 1px solid #494760;
+        border-radius: 14px;
+        background: #242338;
+        transition: background 0.15s ease, border-color 0.15s ease;
       }
       .switch::after {
         content: "";
         position: absolute;
         left: 3px;
         top: 3px;
-        width: 13px;
-        height: 13px;
+        width: 15px;
+        height: 15px;
         border-radius: 50%;
-        background: #6e8f79;
-        transition:
-          transform 0.13s ease,
-          background 0.13s ease;
+        background: #a09db8;
+        transition: transform 0.15s ease, background 0.15s ease;
       }
-      .switch.on {
-        border-color: #61ed9f;
-        background: #19472d;
-      }
-      .switch.on::after {
-        transform: translateX(15px);
-        background: #b8ffd5;
-      }
-      .rangeCard {
-        padding: 11px 0 14px;
-        border-bottom: 1px solid rgba(109, 255, 173, 0.11);
-      }
-      .rangeTop {
-        display: flex;
-        align-items: end;
-        justify-content: space-between;
-        gap: 10px;
-      }
-      .rangeValue {
-        color: #afffcf;
-        font-size: 15px;
-        font-weight: 800;
-      }
-      input[type="range"] {
-        width: 100%;
-        margin-top: 12px;
-        accent-color: #69ffad;
-      }
-      .mapHint {
-        margin: 0 0 11px;
-        color: #85a991;
-        font-size: 11px;
-        line-height: 15px;
-      }
+      .switch.on { border-color: rgba(92, 232, 255, 0.78); background: rgba(92, 232, 255, 0.18); }
+      .switch.on::after { transform: translateX(16px); background: var(--cyan); box-shadow: 0 0 9px rgba(92, 232, 255, 0.7); }
+      .languageButtons { display: flex; padding: 3px; gap: 3px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); }
+      .languageChoice { min-width: 38px; height: 27px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 9px; font-weight: 850; }
+      .languageChoice.active { background: rgba(167, 139, 250, 0.2); color: #efeaff; }
+      .mapHint { margin: 0 0 13px; color: var(--muted); font-size: 10px; line-height: 1.5; }
       #screenMap {
         position: relative;
-        width: min(100%, 430px);
+        width: 100%;
+        max-width: 430px;
         margin: 0 auto;
         aspect-ratio: 16 / 9;
-        border: 1px solid rgba(109, 255, 173, 0.55);
-        border-radius: 5px;
         overflow: hidden;
+        border: 1px solid rgba(92, 232, 255, 0.32);
+        border-radius: 12px;
         background:
-          repeating-linear-gradient(
-            0deg,
-            rgba(109, 255, 173, 0.075) 0 1px,
-            transparent 1px 18px
-          ),
-          repeating-linear-gradient(
-            90deg,
-            rgba(109, 255, 173, 0.075) 0 1px,
-            transparent 1px 18px
-          ),
-          #09170f;
+          linear-gradient(rgba(92, 232, 255, 0.06) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(92, 232, 255, 0.06) 1px, transparent 1px),
+          radial-gradient(ellipse at center, rgba(167, 139, 250, 0.1), transparent 72%),
+          #0c0c1c;
+        background-size: 22px 22px, 22px 22px, auto, auto;
         touch-action: manipulation;
       }
-      #screenMap::before {
-        content: "";
-        position: absolute;
-        left: 50%;
-        top: 0;
-        bottom: 0;
-        width: 1px;
-        background: rgba(109, 255, 173, 0.18);
-      }
-      #screenMap::after {
-        content: "";
-        position: absolute;
-        left: 0;
-        right: 0;
-        top: 50%;
-        height: 1px;
-        background: rgba(109, 255, 173, 0.18);
-      }
+      #screenMap::before, #screenMap::after { content: ""; position: absolute; background: rgba(92, 232, 255, 0.13); pointer-events: none; }
+      #screenMap::before { left: 50%; top: 0; bottom: 0; width: 1px; }
+      #screenMap::after { left: 0; right: 0; top: 50%; height: 1px; }
       #fabDot {
         position: absolute;
-        width: 12px;
-        height: 12px;
-        border: 2px solid #ffe6e6;
+        width: 16px;
+        height: 16px;
+        border: 2px solid #effcff;
         border-radius: 50%;
-        background: #ff3f4f;
+        background: var(--cyan);
         transform: translate(-50%, -50%);
-        box-shadow: 0 0 0 2px rgba(255, 63, 79, 0.22);
+        box-shadow: 0 0 0 5px rgba(92, 232, 255, 0.13), 0 0 16px rgba(92, 232, 255, 0.9);
         pointer-events: none;
       }
-      @media (max-width: 540px) {
-        #menu {
-          width: 60vw;
-          height: 70vh;
-        }
-        .title {
-          font-size: 13px;
-        }
-        .tab {
-          font-size: 10px;
-        }
-        .rowTitle {
-          font-size: 12px;
-        }
+      .mapFoot { margin-top: 10px; color: #77758f; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; text-align: center; letter-spacing: 0.5px; }
+      body.compact .panel { padding-top: 12px; }
+      body.compact .welcomeCopy { margin-bottom: 12px; }
+      body.compact .settingRow { min-height: 53px; padding: 8px 0; }
+      body.no-glow #menu { box-shadow: 0 18px 56px rgba(0, 0, 0, 0.62); }
+      body.no-glow .brandMark, body.no-glow .switch.on::after, body.no-glow #fabDot { box-shadow: none; }
+      @media (max-width: 360px) {
+        #menu { width: calc(100vw - 18px); height: min(620px, 86dvh); }
+        #header { padding-left: 12px; padding-right: 12px; }
+        .brandTitle { font-size: 12px; }
+        .panel { padding-left: 13px; padding-right: 13px; }
       }
     </style>
   </head>
   <body>
-    <section id="menu" aria-label="Menu Mod">
+    <section id="menu" aria-label="DarkSword Control Deck">
       <header id="header">
-        <div>
-          <div class="title">
-            Menu Mod
-            <span id="gameBadge" class="gameBadge">Liên Quân</span>
+        <div class="brand">
+          <div class="brandMark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M13.2 2 5.5 13h5l-.7 9L18.5 11h-5.2l-.1-9Z" />
+            </svg>
           </div>
-          <div class="subtitle">Develop by Le Tien Dat</div>
+          <div>
+            <div class="brandTitle">DARKSWORD <span style="color:var(--cyan)">//</span> DECK</div>
+            <div class="brandSubtitle" data-i18n="subtitle">CONTROL CENTER</div>
+          </div>
         </div>
         <div class="headerActions">
-          <button id="language" class="iconButton" aria-label="Change language">
-            VI
-          </button>
-          <button id="close" class="iconButton" aria-label="Close">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M18 6 6 18M6 6l12 12"></path>
-            </svg>
+          <button id="language" class="iconButton" aria-label="Change language">EN</button>
+          <button id="close" class="iconButton" aria-label="Close menu">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m18 6-12 12M6 6l12 12" /></svg>
           </button>
         </div>
       </header>
-      <nav id="tabs">
-        <button class="tab active" data-tab="esp">ESP</button>
-        <button class="tab aov-only" data-tab="camera" data-i18n="tabCamera">
-          Camera
-        </button>
-        <button class="tab" data-tab="drag" data-i18n="dragTitle">
-          Drag Icon
-        </button>
+      <div id="connectionStrip">
+        <div class="connectionLabel"><span id="connectionDot"></span><span id="connectionText">BRIDGE IDLE</span></div>
+        <span id="socketStatus">LINKING…</span>
+      </div>
+      <nav id="tabs" aria-label="Menu sections">
+        <button class="tab active" data-tab="overview" data-i18n="tabOverview">Overview</button>
+        <button class="tab" data-tab="settings" data-i18n="tabSettings">Interface</button>
+        <button class="tab" data-tab="position" data-i18n="tabPosition">Position</button>
       </nav>
       <main id="content">
-        <section class="panel active" data-panel="esp">
-          <div
-            class="sectionTitle"
-            data-i18n-aov="visual"
-            data-i18n-freefire="visualFreeFire"
-          >
-            Visual
-          </div>
-          <div class="row">
-            <div><div class="rowTitle">ESP</div></div>
-            <button class="switch" data-key="espEnabled"></button>
-          </div>
-          <div class="row aov-only">
-            <div>
-              <div class="rowTitle" data-i18n="hackMap">Hack map</div>
-              <div class="rowValue" data-i18n="hackMapHint">
-                Active visible full enemies
-              </div>
+        <section class="panel active" data-panel="overview">
+          <p class="eyebrow" data-i18n="eyebrow">SYSTEM OVERVIEW / 01</p>
+          <h1 class="welcomeTitle" data-i18n="welcome">Welcome back.</h1>
+          <p class="welcomeCopy" data-i18n="welcomeCopy">Your overlay at a glance. Drag this panel by its header to move it.</p>
+          <div class="statusCard">
+            <div class="cardTop">
+              <div><div class="cardLabel" data-i18n="activeSession">ACTIVE SESSION</div><div id="gameName">—</div></div>
+              <span id="remoteBadge" class="statusPill">OFFLINE</span>
             </div>
-            <button class="switch" data-key="hackMapEnabled"></button>
+            <div class="divider"></div>
+            <div class="detailRow"><span class="detailLabel" data-i18n="process">Process</span><span id="processName" class="detailValue">—</span></div>
+            <div class="detailRow"><span class="detailLabel" data-i18n="sessionStatus">Session status</span><span id="sessionStatus" class="detailValue">—</span></div>
+            <div class="detailRow"><span class="detailLabel" data-i18n="clients">Overlay clients</span><span id="clientCount" class="detailValue">0</span></div>
           </div>
-          <div class="row">
-            <div>
-              <div class="rowTitle" data-i18n="line">Line</div>
-              <div class="rowValue" data-i18n="lineHint">
-                Line from top center
-              </div>
-            </div>
-            <button class="switch" data-key="showsLine"></button>
+          <div class="infoNote" data-i18n="infoNote">Use Interface to adjust this panel’s appearance, or Position to place the floating shortcut.</div>
+        </section>
+        <section class="panel" data-panel="settings">
+          <p class="eyebrow" data-i18n="eyebrowSettings">PREFERENCES / 02</p>
+          <h2 class="sectionHeading" data-i18n="settingsTitle">Interface settings</h2>
+          <p class="sectionCopy" data-i18n="settingsCopy">These preferences affect this menu only and are saved on this device.</p>
+          <div class="settingRow">
+            <div><div class="settingTitle" data-i18n="neonTitle">Neon glow</div><div class="settingHint" data-i18n="neonHint">Enable soft accent lighting</div></div>
+            <button class="switch on" data-pref="glow" role="switch" aria-checked="true" aria-label="Neon glow"></button>
           </div>
-          <div class="row">
-            <div>
-              <div class="rowTitle" data-i18n="box">Box</div>
-              <div class="rowValue" data-i18n="boxHint">Enemy bounding box</div>
-            </div>
-            <button class="switch" data-key="showsBox"></button>
+          <div class="settingRow">
+            <div><div class="settingTitle" data-i18n="compactTitle">Compact layout</div><div class="settingHint" data-i18n="compactHint">Reduce spacing in the menu</div></div>
+            <button class="switch" data-pref="compact" role="switch" aria-checked="false" aria-label="Compact layout"></button>
           </div>
-          <div class="row">
-            <div>
-              <div class="rowTitle" data-i18n="health">Health bar</div>
-              <div class="rowValue" data-i18n="healthHint">
-                Health above the box
-              </div>
-            </div>
-            <button class="switch" data-key="showsHealth"></button>
-          </div>
-          <div class="row">
-            <div>
-              <div
-                class="rowTitle"
-                data-i18n-aov="heroName"
-                data-i18n-freefire="playerName"
-              >
-                Hero name
-              </div>
-              <div
-                class="rowValue"
-                data-i18n-aov="heroNameHint"
-                data-i18n-freefire="playerNameHint"
-              >
-                Hero label
-              </div>
-            </div>
-            <button class="switch" data-key="showsName"></button>
-          </div>
-          <div class="row">
-            <div>
-              <div class="rowTitle" data-i18n="distance">Distance</div>
-              <div class="rowValue" data-i18n="distanceHint">
-                Show distance to enemy
-              </div>
-            </div>
-            <button class="switch" data-key="showsDistance"></button>
+          <div class="settingRow">
+            <div><div class="settingTitle" data-i18n="languageTitle">Language</div><div class="settingHint" data-i18n="languageHint">Choose the menu language</div></div>
+            <div class="languageButtons"><button class="languageChoice" data-locale="vi">VI</button><button class="languageChoice active" data-locale="en">EN</button></div>
           </div>
         </section>
-        <section class="panel aov-only" data-panel="camera">
-          <div class="sectionTitle" data-i18n="camera">Camera</div>
-          <div class="rangeCard">
-            <div class="rangeTop">
-              <div>
-                <div class="rowTitle" data-i18n="cameraHeight">
-                  Camera height
-                </div>
-                <div class="rowValue" data-i18n="cameraHint">
-                  Remote camera zoom value
-                </div>
-              </div>
-              <div id="cameraValue" class="rangeValue">1.0</div>
-            </div>
-            <input
-              id="cameraHeight"
-              type="range"
-              min="1"
-              max="10"
-              step="0.1"
-              value="1"
-            />
-          </div>
-        </section>
-        <section class="panel" data-panel="drag">
-          <div class="sectionTitle" data-i18n="dragTitle">Drag Icon</div>
-          <p class="mapHint" data-i18n="dragHint">
-            Tap a position to place the floating button.
-          </p>
-          <div id="screenMap"><div id="fabDot"></div></div>
+        <section class="panel" data-panel="position">
+          <p class="eyebrow" data-i18n="eyebrowPosition">LAYOUT / 03</p>
+          <h2 class="sectionHeading" data-i18n="positionTitle">Floating shortcut</h2>
+          <p class="mapHint" data-i18n="positionHint">Tap anywhere in the preview to move the floating button to that point on screen.</p>
+          <div id="screenMap" role="button" aria-label="Choose floating button position"><div id="fabDot"></div></div>
+          <div class="mapFoot" data-i18n="positionFoot">TAP PREVIEW TO PLACE · DRAG HEADER TO MOVE MENU</div>
         </section>
       </main>
     </section>
@@ -449,287 +395,158 @@
       var header = document.getElementById("header");
       var screenMap = document.getElementById("screenMap");
       var fabDot = document.getElementById("fabDot");
-      var state = {
-        game: "aov",
-        espEnabled: false,
-        hackMapEnabled: false,
-        showsLine: false,
-        showsBox: false,
-        showsHealth: false,
-        showsName: false,
-        showsDistance: false,
-        cameraHeight: 1,
-        cameraHeightMin: 1,
-        cameraHeightMax: 10,
-      };
-      var layout = {
-        screenWidth: 16,
-        screenHeight: 9,
-        fabCenterX: 0.5,
-        fabCenterY: 0.5,
-        menuVisible: false,
-      };
-      var locale = "en";
-      try {
-        locale = localStorage.getItem("ds.menu.locale") || "vi";
-      } catch (error) {}
-      var cameraHeightDirty = false;
-      var pendingMenuVisibility = null;
+      var state = { game: "aov", remoteConnected: false, connectedProcess: "", aovStatus: "Idle", freeFireStatus: "Idle", socketClients: 0 };
+      var layout = { screenWidth: 16, screenHeight: 9, fabCenterX: 0.5, fabCenterY: 0.5 };
+      var locale = "vi";
+      var preferences = { glow: true, compact: false };
       var translations = {
         en: {
-          gameAov: "Liên Quân",
-          gameFreeFire: "Free Fire",
-          tabCamera: "Camera",
-          visual: "Visual",
-          visualFreeFire: "Player ESP",
-          hackMap: "Hack map",
-          hackMapHint: "Active visible full enemies",
-          line: "Line",
-          lineHint: "Line from the top of the screen",
-          box: "Box",
-          boxHint: "Box around each enemy",
-          health: "Health bar",
-          healthHint: "Show above the box",
-          heroName: "Hero name",
-          heroNameHint: "Show hero name",
-          playerName: "Player name",
-          playerNameHint: "Show player name",
-          distance: "Distance",
-          distanceHint: "Show distance to enemy",
-          camera: "Camera",
-          cameraHeight: "Camera height",
-          cameraHint: "Drag to zoom in or out",
-          dragTitle: "Drag Icon",
-          dragHint: "Tap where you want to place the floating button.",
+          subtitle: "CONTROL CENTER", tabOverview: "Overview", tabSettings: "Interface", tabPosition: "Position",
+          eyebrow: "SYSTEM OVERVIEW / 01", welcome: "Welcome back.", welcomeCopy: "Your overlay at a glance. Drag this panel by its header to move it.",
+          activeSession: "ACTIVE SESSION", process: "Process", sessionStatus: "Session status", clients: "Overlay clients",
+          infoNote: "Use Interface to adjust this panel’s appearance, or Position to place the floating shortcut.",
+          eyebrowSettings: "PREFERENCES / 02", settingsTitle: "Interface settings", settingsCopy: "These preferences affect this menu only and are saved on this device.",
+          neonTitle: "Neon glow", neonHint: "Enable soft accent lighting", compactTitle: "Compact layout", compactHint: "Reduce spacing in the menu",
+          languageTitle: "Language", languageHint: "Choose the menu language", eyebrowPosition: "LAYOUT / 03", positionTitle: "Floating shortcut",
+          positionHint: "Tap anywhere in the preview to move the floating button to that point on screen.", positionFoot: "TAP PREVIEW TO PLACE · DRAG HEADER TO MOVE MENU",
+          online: "ONLINE", offline: "OFFLINE", connected: "CONNECTED", idle: "IDLE", bridgeIdle: "BRIDGE IDLE", bridgeReady: "BRIDGE READY",
+          gameAov: "Liên Quân Mobile", gameFreeFire: "Free Fire", noSession: "No active session", connecting: "Connecting", disconnected: "Disconnected"
         },
         vi: {
-          gameAov: "Liên Quân",
-          gameFreeFire: "Free Fire",
-          tabCamera: "Camera",
-          visual: "Hiển thị ESP",
-          visualFreeFire: "ESP người chơi",
-          hackMap: "Map sáng",
-          hackMapHint: "Hiển thị full kẻ địch",
-          line: "Line",
-          lineHint: "Kẻ đường line tới địch",
-          box: "Box",
-          boxHint: "Khung quanh từng kẻ địch",
-          health: "Máu",
-          healthHint: "Hiển thị máu địch",
-          heroName: "Tên tướng",
-          heroNameHint: "Hiển thị tên tướng",
-          playerName: "Tên người chơi",
-          playerNameHint: "Hiển thị tên người chơi",
-          distance: "Khoảng cách",
-          distanceHint: "Hiển thị khoảng cách tới địch",
-          camera: "Camera",
-          cameraHeight: "Độ cao camera",
-          cameraHint: "Kéo để zoom camera gần hoặc xa",
-          dragTitle: "Vị trí icon menu",
-          dragHint: "Chạm vào vị trí muốn hiển thị icon menu",
-        },
+          subtitle: "TRUNG TÂM ĐIỀU KHIỂN", tabOverview: "Tổng quan", tabSettings: "Giao diện", tabPosition: "Vị trí",
+          eyebrow: "TỔNG QUAN HỆ THỐNG / 01", welcome: "Chào mừng trở lại.", welcomeCopy: "Trạng thái overlay của bạn. Kéo thanh tiêu đề để di chuyển bảng này.",
+          activeSession: "PHIÊN ĐANG HOẠT ĐỘNG", process: "Tiến trình", sessionStatus: "Trạng thái phiên", clients: "Kết nối overlay",
+          infoNote: "Mở Giao diện để chỉnh cách hiển thị bảng, hoặc Vị trí để đặt nút nổi.",
+          eyebrowSettings: "TÙY CHỌN / 02", settingsTitle: "Cài đặt giao diện", settingsCopy: "Các tùy chọn chỉ áp dụng cho menu và được lưu trên thiết bị này.",
+          neonTitle: "Hiệu ứng neon", neonHint: "Bật ánh sáng màu nhẹ", compactTitle: "Bố cục gọn", compactHint: "Giảm khoảng cách trong menu",
+          languageTitle: "Ngôn ngữ", languageHint: "Chọn ngôn ngữ menu", eyebrowPosition: "BỐ CỤC / 03", positionTitle: "Nút truy cập nổi",
+          positionHint: "Chạm vào vị trí bất kỳ trong khung xem trước để di chuyển nút nổi tới đó.", positionFoot: "CHẠM ĐỂ ĐẶT · KÉO TIÊU ĐỀ ĐỂ DI CHUYỂN MENU",
+          online: "TRỰC TUYẾN", offline: "NGOẠI TUYẾN", connected: "ĐÃ KẾT NỐI", idle: "CHỜ", bridgeIdle: "CẦU NỐI ĐANG CHỜ", bridgeReady: "CẦU NỐI SẴN SÀNG",
+          gameAov: "Liên Quân Mobile", gameFreeFire: "Free Fire", noSession: "Chưa có phiên hoạt động", connecting: "Đang kết nối", disconnected: "Đã ngắt kết nối"
+        }
       };
+      try {
+        var savedLocale = localStorage.getItem("ds.menu.locale");
+        if (savedLocale === "vi" || savedLocale === "en") locale = savedLocale;
+        preferences.glow = localStorage.getItem("ds.menu.glow") !== "false";
+        preferences.compact = localStorage.getItem("ds.menu.compact") === "true";
+      } catch (error) {}
 
-      function clamp(value, minimum, maximum) {
-        return Math.max(minimum, Math.min(maximum, value));
-      }
+      function clamp(value, minimum, maximum) { return Math.max(minimum, Math.min(maximum, value)); }
       function send(message) {
         if (!socket || socket.readyState !== WebSocket.OPEN) return false;
-        try {
-          socket.send(JSON.stringify(message));
-          return true;
-        } catch (error) {
-          return false;
-        }
+        try { socket.send(JSON.stringify(message)); return true; } catch (error) { return false; }
       }
-      function sendOption(key, value) {
-        send({ type: "setOption", key: key, value: value });
+      function setMenuVisible(visible) { send({ type: "setMenuVisible", visible: !!visible }); }
+      function activeGame() { return state.game === "freefire" ? "freefire" : "aov"; }
+      function statusText(value) {
+        var strings = translations[locale];
+        if (!value || value === "Idle") return strings.idle;
+        if (value === "Disconnected") return strings.disconnected;
+        return String(value);
       }
-      function flushPendingMenuVisibility() {
-        if (pendingMenuVisibility === null) return;
-        if (send({ type: "setMenuVisible", visible: pendingMenuVisibility }))
-          pendingMenuVisibility = null;
-      }
-      function setMenuVisible(visible) {
-        pendingMenuVisibility = !!visible;
-        flushPendingMenuVisibility();
-      }
-
       function renderState() {
-        document
-          .querySelectorAll(".switch[data-key]")
-          .forEach(function (button) {
-            button.classList.toggle("on", !!state[button.dataset.key]);
-          });
-        var slider = document.getElementById("cameraHeight");
-        slider.min = state.cameraHeightMin || 1;
-        slider.max = state.cameraHeightMax || 10;
-        slider.value = state.cameraHeight || 1;
-        document.getElementById("cameraValue").textContent = Number(
-          slider.value,
-        ).toFixed(1);
+        var strings = translations[locale];
+        var connected = !!state.remoteConnected;
+        var strip = document.getElementById("connectionStrip");
+        strip.classList.toggle("connected", connected);
+        document.getElementById("connectionText").textContent = connected ? strings.bridgeReady : strings.bridgeIdle;
+        document.getElementById("remoteBadge").textContent = connected ? strings.online : strings.offline;
+        document.getElementById("remoteBadge").classList.toggle("connected", connected);
+        document.getElementById("gameName").textContent = connected ? (activeGame() === "freefire" ? strings.gameFreeFire : strings.gameAov) : strings.noSession;
+        document.getElementById("processName").textContent = state.connectedProcess || "—";
+        var sessionStatus = activeGame() === "freefire" ? state.freeFireStatus : state.aovStatus;
+        document.getElementById("sessionStatus").textContent = statusText(connected ? strings.connected : sessionStatus);
+        document.getElementById("clientCount").textContent = String(Number(state.socketClients) || 0);
       }
-
       function renderLayout() {
         var width = Math.max(1, Number(layout.screenWidth) || 1);
         var height = Math.max(1, Number(layout.screenHeight) || 1);
         screenMap.style.aspectRatio = width + " / " + height;
-        fabDot.style.left = clamp(Number(layout.fabCenterX), 0, 1) * 100 + "%";
-        fabDot.style.top = clamp(Number(layout.fabCenterY), 0, 1) * 100 + "%";
+        fabDot.style.left = clamp(Number(layout.fabCenterX) || 0, 0, 1) * 100 + "%";
+        fabDot.style.top = clamp(Number(layout.fabCenterY) || 0, 0, 1) * 100 + "%";
       }
-
-      function activeGame() {
-        return state.game === "freefire" ? "freefire" : "aov";
-      }
-
       function applyLocale() {
-        var strings = translations[locale] || translations.vi;
-        document.getElementById("language").textContent =
-          locale === "vi" ? "EN" : "VI";
+        var strings = translations[locale];
         document.documentElement.lang = locale;
-        document
-          .querySelectorAll(
-            "[data-i18n], [data-i18n-aov], [data-i18n-freefire]",
-          )
-          .forEach(function (element) {
-            var key = element.dataset.i18n;
-            if (!key) {
-              key =
-                activeGame() === "freefire"
-                  ? element.dataset.i18nFreefire
-                  : element.dataset.i18nAov;
-            }
-            var value = key ? strings[key] : "";
-            if (value) element.textContent = value;
-          });
-        document.getElementById("gameBadge").textContent =
-          activeGame() === "freefire"
-            ? strings.gameFreeFire
-            : strings.gameAov;
+        document.querySelectorAll("[data-i18n]").forEach(function (element) {
+          var value = strings[element.dataset.i18n];
+          if (value) element.textContent = value;
+        });
+        document.getElementById("language").textContent = locale === "vi" ? "EN" : "VI";
+        document.querySelectorAll(".languageChoice").forEach(function (button) {
+          button.classList.toggle("active", button.dataset.locale === locale);
+        });
+        renderState();
       }
-
-      function applyGameMode() {
-        var isFreeFire = activeGame() === "freefire";
-        document.body.classList.toggle("game-freefire", isFreeFire);
-        if (isFreeFire) {
-          var activeTab = document.querySelector(".tab.active");
-          if (activeTab && activeTab.dataset.tab === "camera") {
-            document.querySelector('.tab[data-tab="esp"]').click();
-          }
-        }
-        applyLocale();
+      function renderPreferences() {
+        document.body.classList.toggle("no-glow", !preferences.glow);
+        document.body.classList.toggle("compact", preferences.compact);
+        document.querySelectorAll(".switch[data-pref]").forEach(function (button) {
+          var enabled = !!preferences[button.dataset.pref];
+          button.classList.toggle("on", enabled);
+          button.setAttribute("aria-checked", String(enabled));
+        });
       }
-
       function applyPayload(raw) {
         try {
           var payload = JSON.parse(raw);
           if (payload && payload.type === "state" && payload.state) {
-            Object.keys(payload.state).forEach(function (key) {
-              state[key] = payload.state[key];
-            });
-            applyGameMode();
+            Object.keys(payload.state).forEach(function (key) { state[key] = payload.state[key]; });
             renderState();
           }
           if (payload && payload.type === "overlayLayout" && payload.layout) {
-            Object.keys(payload.layout).forEach(function (key) {
-              layout[key] = payload.layout[key];
-            });
+            Object.keys(payload.layout).forEach(function (key) { layout[key] = payload.layout[key]; });
             renderLayout();
           }
         } catch (error) {}
       }
-
       function connect() {
-        try {
-          socket = new WebSocket(socketURL);
-        } catch (error) {
-          scheduleReconnect();
-          return;
-        }
+        try { socket = new WebSocket(socketURL); } catch (error) { scheduleReconnect(); return; }
         socket.onopen = function () {
+          document.getElementById("socketStatus").textContent = "LOCAL LINK ACTIVE";
           send({ type: "hello", role: "menu" });
-          flushPendingMenuVisibility();
         };
-        socket.onmessage = function (event) {
-          if (
-            typeof event.data === "string" &&
-            event.data.indexOf('"type":"state"') === -1 &&
-            event.data.indexOf('"overlayLayout"') === -1
-          )
-            return;
-          applyPayload(event.data);
-        };
+        socket.onmessage = function (event) { if (typeof event.data === "string") applyPayload(event.data); };
         socket.onclose = function () {
           socket = null;
+          document.getElementById("socketStatus").textContent = "RECONNECTING…";
           scheduleReconnect();
         };
-        socket.onerror = function () {
-          try {
-            socket.close();
-          } catch (error) {}
-        };
+        socket.onerror = function () { try { socket.close(); } catch (error) {} };
       }
       function scheduleReconnect() {
         if (reconnectTimer) return;
-        reconnectTimer = setTimeout(function () {
-          reconnectTimer = 0;
-          connect();
-        }, 500);
+        reconnectTimer = setTimeout(function () { reconnectTimer = 0; connect(); }, 700);
       }
-
-      document.querySelectorAll(".switch[data-key]").forEach(function (button) {
-        button.addEventListener("click", function () {
-          var key = button.dataset.key;
-          state[key] = !state[key];
-          renderState();
-          sendOption(key, state[key]);
-        });
-      });
-
-      var cameraHeightControl = document.getElementById("cameraHeight");
-      function commitCameraHeight() {
-        if (!cameraHeightDirty) return;
-        cameraHeightDirty = false;
-        sendOption("cameraHeight", state.cameraHeight);
-      }
-      cameraHeightControl.addEventListener("input", function () {
-        state.cameraHeight = Number(cameraHeightControl.value);
-        document.getElementById("cameraValue").textContent =
-          state.cameraHeight.toFixed(1);
-        cameraHeightDirty = true;
-      });
-      cameraHeightControl.addEventListener("change", commitCameraHeight);
-      cameraHeightControl.addEventListener("pointerup", commitCameraHeight);
-      cameraHeightControl.addEventListener("touchend", commitCameraHeight);
 
       document.querySelectorAll(".tab").forEach(function (button) {
         button.addEventListener("click", function () {
-          document.querySelectorAll(".tab").forEach(function (item) {
-            item.classList.toggle("active", item === button);
-          });
-          document.querySelectorAll(".panel").forEach(function (panel) {
-            panel.classList.toggle(
-              "active",
-              panel.dataset.panel === button.dataset.tab,
-            );
-          });
+          document.querySelectorAll(".tab").forEach(function (item) { item.classList.toggle("active", item === button); });
+          document.querySelectorAll(".panel").forEach(function (panel) { panel.classList.toggle("active", panel.dataset.panel === button.dataset.tab); });
         });
       });
-
-      function toggleLocale() {
-        locale = locale === "vi" ? "en" : "vi";
-        try {
-          localStorage.setItem("ds.menu.locale", locale);
-        } catch (error) {}
-        applyLocale();
-      }
-      document
-        .getElementById("language")
-        .addEventListener("click", toggleLocale);
-
-      document.getElementById("close").addEventListener("click", function () {
-        setMenuVisible(false);
+      document.querySelectorAll(".switch[data-pref]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          var key = button.dataset.pref;
+          preferences[key] = !preferences[key];
+          try { localStorage.setItem("ds.menu." + key, String(preferences[key])); } catch (error) {}
+          renderPreferences();
+        });
       });
+      document.querySelectorAll(".languageChoice").forEach(function (button) {
+        button.addEventListener("click", function () {
+          locale = button.dataset.locale;
+          try { localStorage.setItem("ds.menu.locale", locale); } catch (error) {}
+          applyLocale();
+        });
+      });
+      document.getElementById("language").addEventListener("click", function () {
+        locale = locale === "vi" ? "en" : "vi";
+        try { localStorage.setItem("ds.menu.locale", locale); } catch (error) {}
+        applyLocale();
+      });
+      document.getElementById("close").addEventListener("click", function () { setMenuVisible(false); });
       screenMap.addEventListener("pointerdown", function (event) {
         var rect = screenMap.getBoundingClientRect();
         var xRatio = clamp((event.clientX - rect.left) / rect.width, 0, 1);
@@ -737,64 +554,39 @@
         layout.fabCenterX = xRatio;
         layout.fabCenterY = yRatio;
         renderLayout();
-        send({
-          type: "setFloatButtonPosition",
-          xRatio: xRatio,
-          yRatio: yRatio,
-        });
+        send({ type: "setFloatButtonPosition", xRatio: xRatio, yRatio: yRatio });
         event.preventDefault();
       });
 
       var dragging = false;
-      var startX = 0;
-      var startY = 0;
-      var originX = 0;
-      var originY = 0;
+      var startX = 0, startY = 0, originX = 0, originY = 0;
       header.addEventListener("pointerdown", function (event) {
         if (event.target.closest("button")) return;
         var rect = menu.getBoundingClientRect();
-        dragging = true;
-        startX = event.clientX;
-        startY = event.clientY;
-        originX = rect.left;
-        originY = rect.top;
-        menu.style.left = originX + "px";
-        menu.style.top = originY + "px";
-        menu.style.transform = "none";
+        dragging = true; startX = event.clientX; startY = event.clientY;
+        originX = rect.left; originY = rect.top;
+        menu.style.left = originX + "px"; menu.style.top = originY + "px"; menu.style.transform = "none";
         header.setPointerCapture(event.pointerId);
         event.preventDefault();
       });
       header.addEventListener("pointermove", function (event) {
         if (!dragging) return;
-        var width = menu.offsetWidth;
-        var height = menu.offsetHeight;
-        var nextX = clamp(
-          originX + event.clientX - startX,
-          0,
-          Math.max(0, window.innerWidth - width),
-        );
-        var nextY = clamp(
-          originY + event.clientY - startY,
-          0,
-          Math.max(0, window.innerHeight - height),
-        );
-        menu.style.left = nextX + "px";
-        menu.style.top = nextY + "px";
+        menu.style.left = clamp(originX + event.clientX - startX, 0, Math.max(0, innerWidth - menu.offsetWidth)) + "px";
+        menu.style.top = clamp(originY + event.clientY - startY, 0, Math.max(0, innerHeight - menu.offsetHeight)) + "px";
         event.preventDefault();
       });
       function stopMenuDrag(event) {
         if (!dragging) return;
         dragging = false;
-        try {
-          header.releasePointerCapture(event.pointerId);
-        } catch (error) {}
+        try { header.releasePointerCapture(event.pointerId); } catch (error) {}
       }
       header.addEventListener("pointerup", stopMenuDrag);
       header.addEventListener("pointercancel", stopMenuDrag);
 
-      applyGameMode();
-      renderState();
+      applyLocale();
+      renderPreferences();
       renderLayout();
+      renderState();
       connect();
     </script>
   </body>
