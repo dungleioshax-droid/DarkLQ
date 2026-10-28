@@ -439,9 +439,7 @@ NS_ASSUME_NONNULL_BEGIN
     uintptr_t candidates[kMaxStaticCandidates];
     int candidateCount = 0;
 
-    // Strategy 1: Il2Cpp MethodInfo RVAs from the dump. They go stale after a
-    // game update (the values can be completely bogus), so the results are
-    // only candidates until verified.
+    // Strategy 1: Il2Cpp MethodInfo RVAs from the dump.
     const uint64_t methodInfoOffsets[] = {
         kMethodInfo_GameFacade_CCtor,
         kMethodInfo_GameFacade_CurrentLocalPlayer,
@@ -457,18 +455,24 @@ NS_ASSUME_NONNULL_BEGIN
                           klass);
     }
 
-    // Strategy 2: collect EVERY ADRP-derived pointer of the accessors instead
-    // of trusting the first pair the decoder happens to hit.
+    // Strategy 2: Collect ADRP/LDR/ADD static candidates across GameFacade methods & getters
     const uint64_t accessorRVAs[] = {
+        kGameFacade_GetGameServerPort,
+        kGameFacade_GetGameServerAddr,
+        kGameFacade_GetIsCameraMode,
         kGameFacade_CCtor,
         kGameFacade_CurrentLocalPlayer,
-        kGameFacade_SetCurrentGame
+        kGameFacade_SetCurrentGame,
+        kGameFacade_CurrentLocalPlayerID,
+        kGameFacade_GetLocalPlayerOrObServer,
+        kGameFacade_IsLocalTeammate
     };
+    const int accessorCount = (int)(sizeof(accessorRVAs) / sizeof(accessorRVAs[0]));
 
-    for (int i = 0; i < 3; ++i) {
-        uintptr_t found[8] = {0};
+    for (int i = 0; i < accessorCount; ++i) {
+        uintptr_t found[16] = {0};
         int foundCount = CollectArm64StaticCandidates(
-            remoteCall, self.binaryBase + accessorRVAs[i], found, 8);
+            remoteCall, self.binaryBase + accessorRVAs[i], found, 16);
         for (int j = 0; j < foundCount; ++j) {
             PushCandidate(candidates, &candidateCount, kMaxStaticCandidates,
                           found[j]);
@@ -487,69 +491,46 @@ NS_ASSUME_NONNULL_BEGIN
     for (int i = 0; i < candidateCount && staticFields == 0; ++i) {
         uintptr_t candidate = candidates[i];
 
-        if (Il2CppKlassNameIs(remoteCall, candidate, "GameFacade")) {
-            staticFields =
-                FindStaticFieldsBlockInKlass(remoteCall, candidate);
-            if (staticFields != 0) {
-                break;
+        // 1. Is candidate the Il2CppClass* for GameFacade?
+        staticFields = TryResolveGameFacadeFromKlass(remoteCall, candidate);
+        if (staticFields != 0) break;
+
+        // 2. Is *candidate the Il2CppClass* for GameFacade?
+        uintptr_t deref1 = ReadMemorySafe<uintptr_t>(remoteCall, candidate);
+        if (validOffsetPtr(deref1)) {
+            staticFields = TryResolveGameFacadeFromKlass(remoteCall, deref1);
+            if (staticFields != 0) break;
+
+            // 3. Is **candidate the Il2CppClass* for GameFacade?
+            uintptr_t deref2 = ReadMemorySafe<uintptr_t>(remoteCall, deref1);
+            if (validOffsetPtr(deref2)) {
+                staticFields = TryResolveGameFacadeFromKlass(remoteCall, deref2);
+                if (staticFields != 0) break;
             }
         }
-        if (staticFields == 0 &&
-            LooksLikeGameFacadeStaticBlock(remoteCall, candidate)) {
+
+        // 4. Is candidate directly the static_fields block?
+        if (LooksLikeGameFacadeStaticBlock(remoteCall, candidate)) {
             staticFields = candidate;
+            break;
+        }
+
+        // 5. Is *candidate the static_fields block?
+        if (validOffsetPtr(deref1) && LooksLikeGameFacadeStaticBlock(remoteCall, deref1)) {
+            staticFields = deref1;
             break;
         }
     }
 
     if (staticFields == 0) {
-        // Recovery: find the literal "GameFacade" class name in the image and
-        // match it against the candidates. This pins both the klass pointer
-        // and the real name offset, correcting a stale dump offset for every
-        // class-name based check in the pipeline.
-        uintptr_t nameAddr =
-            FindGameFacadeNameInImage(remoteCall, self.binaryBase);
-        if (validOffsetPtr(nameAddr)) {
-            for (int i = 0; i < candidateCount && staticFields == 0; ++i) {
-                uint64_t nameOffset =
-                    FindNameOffsetByString(remoteCall, candidates[i], nameAddr);
-                if (nameOffset == 0)
-                    continue;
-
-                gFreeFireKlassNameOffset = nameOffset;
-                staticFields =
-                    FindStaticFieldsBlockInKlass(remoteCall, candidates[i]);
-            }
+        NSMutableString *diag = [NSMutableString stringWithFormat:@"cands=%d: ", candidateCount];
+        for (int i = 0; i < std::min(candidateCount, 8); ++i) {
+            uintptr_t c = candidates[i];
+            uintptr_t d = ReadMemorySafe<uintptr_t>(remoteCall, c);
+            [diag appendFormat:@"c%d=0x%lx(val=0x%lx) ", i, (unsigned long)c, (unsigned long)d];
         }
-
-        if (staticFields == 0) {
-            char probe[240] = {0};
-            size_t used = 0;
-            for (int i = 0;
-                 i < candidateCount && used + 48 < sizeof(probe); ++i) {
-                char at8[24] = {0};
-                char at16[24] = {0};
-                ReadStructPointerString(remoteCall, candidates[i], 0x08, at8,
-                                        sizeof(at8));
-                ReadStructPointerString(remoteCall, candidates[i], 0x10,
-                                        at16, sizeof(at16));
-                if (at8[0] == '\0' && at16[0] == '\0')
-                    continue;
-                int written = snprintf(probe + used, sizeof(probe) - used,
-                                       "%d:'%s'|'%s' ", i, at8, at16);
-                if (written <= 0)
-                    break;
-                used += (size_t)written;
-            }
-
-            [self
-                reportStatus:
-                    [NSString
-                        stringWithFormat:@"static fields unverified: "
-                                         @"cands=%d img=0x%lx %s",
-                                         candidateCount,
-                                         (unsigned long)nameAddr, probe]];
-            return 0;
-        }
+        [self reportStatus:[NSString stringWithFormat:@"static fields unverified: %@", diag]];
+        return 0;
     }
 
     // MatchGame lives in one of the dump slots (0x08 / 0x00); fall back to

@@ -17,6 +17,10 @@ inline constexpr uint64_t kGameFacade_GetLocalPlayerOrObServer = 0x5919628;
 inline constexpr uint64_t kGameFacade_IsLocalTeammate = 0x591C5B4;
 inline constexpr uint64_t kGameFacade_CCtor = 0x5944B44;
 inline constexpr uint64_t kGameFacade_SetCurrentGame = 0x5918864;
+inline constexpr uint64_t kGameFacade_GetGameServerPort = 0x5913128;
+inline constexpr uint64_t kGameFacade_GetGameServerAddr = 0x5912F20;
+inline constexpr uint64_t kGameFacade_GetIsCameraMode = 0x5913788;
+inline constexpr uint64_t kGameFacade_CurrentLocalPlayerID = 0x591D5EC;
 
 // MethodInfo RVAs (from ScriptMetadataMethod in FFDUMP)
 inline constexpr uint64_t kMethodInfo_GameFacade_CCtor = 0xFCA16C68;

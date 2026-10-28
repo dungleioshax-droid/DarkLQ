@@ -316,24 +316,40 @@ static bool ReadIl2CppClassName(RemoteCall *remoteCall, uintptr_t object,
     if (!validOffsetPtr(klass))
         return false;
 
-    uintptr_t namePtr =
-        ReadMemorySafe<uintptr_t>(remoteCall, klass + gFreeFireKlassNameOffset);
-    if (!validOffsetPtr(namePtr))
-        return false;
+    const uint64_t candidateOffsets[] = {
+        gFreeFireKlassNameOffset != 0 ? gFreeFireKlassNameOffset : kIl2CppClass_Name,
+        0x10, 0x08, 0x18, 0x20
+    };
 
-    char buffer[64] = {0};
-    if (![remoteCall remoteRead:namePtr to:buffer size:sizeof(buffer) - 1])
-        return false;
+    for (int i = 0; i < 5; ++i) {
+        uint64_t off = candidateOffsets[i];
+        if (i > 0 && off == candidateOffsets[0])
+            continue;
 
-    size_t length = 0;
-    while (length < sizeof(buffer) && buffer[length] != '\0')
-        ++length;
-    if (length == 0 || length >= capacity)
-        return false;
+        uintptr_t namePtr = ReadMemorySafe<uintptr_t>(remoteCall, klass + off);
+        if (!validOffsetPtr(namePtr))
+            continue;
 
-    memcpy(out, buffer, length);
-    out[length] = '\0';
-    return true;
+        char buffer[64] = {0};
+        if (![remoteCall remoteRead:namePtr to:buffer size:sizeof(buffer) - 1])
+            continue;
+
+        size_t length = 0;
+        while (length < sizeof(buffer) && buffer[length] != '\0') {
+            unsigned char c = (unsigned char)buffer[length];
+            if (c < 0x20 || c > 0x7E)
+                break;
+            ++length;
+        }
+        if (length > 0 && length < capacity && buffer[length] == '\0') {
+            memcpy(out, buffer, length);
+            out[length] = '\0';
+            gFreeFireKlassNameOffset = off;
+            return true;
+        }
+    }
+
+    return false;
 }
 
 static bool IsSubclassOf(RemoteCall *remoteCall, uintptr_t object,
@@ -497,7 +513,7 @@ static uint64_t FindIl2CppFieldMatching(
 // the block lives inside it, or it IS the block (a dump slot holds a game
 // object). Unverifiable pointers are discarded instead of being used.
 
-static const int kMaxStaticCandidates = 24;
+static const int kMaxStaticCandidates = 48;
 
 static void PushCandidate(uintptr_t *values, int *count, int capacity,
                           uintptr_t value) {
@@ -512,38 +528,79 @@ static void PushCandidate(uintptr_t *values, int *count, int capacity,
     values[(*count)++] = value;
 }
 
-static bool Il2CppKlassNameIs(RemoteCall *remoteCall, uintptr_t klass,
-                              const char *want) {
-    if (!want || !validOffsetPtr(klass))
-        return false;
-
-    uintptr_t namePtr =
-        ReadMemorySafe<uintptr_t>(remoteCall, klass + gFreeFireKlassNameOffset);
-    if (!validOffsetPtr(namePtr))
-        return false;
-
-    char buffer[64] = {0};
-    if (![remoteCall remoteRead:namePtr to:buffer size:sizeof(buffer) - 1])
-        return false;
-    buffer[sizeof(buffer) - 1] = '\0';
-    return strcmp(buffer, want) == 0;
-}
-
 static bool LooksLikeGameFacadeStaticBlock(RemoteCall *remoteCall,
                                            uintptr_t block) {
-    if (!validOffsetPtr(block))
+    if (!remoteCall || !validOffsetPtr(block))
         return false;
 
-    // The first slots of GameFacade's static fields hold game objects
-    // (CurrentGame / CurrentMatchGame in the dump layout); scan the early
-    // slots so a shifted layout still verifies.
+    // Check 1: In-match or lobby Game object at 0x08 (CurrentMatchGame) or 0x00 (CurrentGame)
     for (uint64_t slot = 0x0; slot <= 0x38; slot += sizeof(uintptr_t)) {
-        uintptr_t value =
-            ReadMemorySafe<uintptr_t>(remoteCall, block + slot);
-        if (Il2CppClassNameContains(remoteCall, value, "Game"))
-            return true;
+        uintptr_t value = ReadMemorySafe<uintptr_t>(remoteCall, block + slot);
+        if (validOffsetPtr(value)) {
+            char name[64] = {0};
+            if (ReadIl2CppClassName(remoteCall, value, name, sizeof(name))) {
+                if (strstr(name, "Game") != NULL)
+                    return true;
+            }
+        }
     }
+
+    // Check 2: C# static string fields (GameFacade has static strings from 0x10 to 0x40)
+    int stringMatches = 0;
+    for (uint64_t slot = 0x10; slot <= 0x40; slot += sizeof(uintptr_t)) {
+        uintptr_t strObj = ReadMemorySafe<uintptr_t>(remoteCall, block + slot);
+        if (validOffsetPtr(strObj)) {
+            int32_t strLen = ReadMemorySafe<int32_t>(remoteCall, strObj + 0x10);
+            if (strLen > 0 && strLen < 128) {
+                uint16_t firstChar = ReadMemorySafe<uint16_t>(remoteCall, strObj + 0x14);
+                if (firstChar >= 0x20 && firstChar <= 0x7E) {
+                    stringMatches++;
+                }
+            }
+        }
+    }
+    if (stringMatches >= 2)
+        return true;
+
+    // Check 3: LocalPlayerUserID at 0x58 (positive integer > 10000000)
+    uint64_t uid = ReadMemorySafe<uint64_t>(remoteCall, block + 0x58);
+    if (uid > 10000000ULL && uid < 10000000000000ULL)
+        return true;
+
     return false;
+}
+
+static uintptr_t TryResolveGameFacadeFromKlass(RemoteCall *remoteCall,
+                                              uintptr_t klass) {
+    if (!remoteCall || !validOffsetPtr(klass))
+        return 0;
+
+    for (uint64_t offset = 0x00; offset <= 0x40; offset += sizeof(uintptr_t)) {
+        uintptr_t namePtr = ReadMemorySafe<uintptr_t>(remoteCall, klass + offset);
+        if (!validOffsetPtr(namePtr))
+            continue;
+
+        char buf[32] = {0};
+        if ([remoteCall remoteRead:namePtr to:buf size:sizeof(buf) - 1]) {
+            buf[sizeof(buf) - 1] = '\0';
+            if (strcmp(buf, "GameFacade") == 0) {
+                gFreeFireKlassNameOffset = offset;
+                // Found GameFacade! Read static_fields at 0xB8
+                uintptr_t sf = ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_StaticFields);
+                if (validOffsetPtr(sf)) {
+                    return sf;
+                }
+                // Fallback: scan klass fields for static_fields block
+                for (uint64_t sfoff = 0x20; sfoff <= 0x280; sfoff += sizeof(uintptr_t)) {
+                    uintptr_t block = ReadMemorySafe<uintptr_t>(remoteCall, klass + sfoff);
+                    if (validOffsetPtr(block) && LooksLikeGameFacadeStaticBlock(remoteCall, block))
+                        return block;
+                }
+                return klass;
+            }
+        }
+    }
+    return 0;
 }
 
 // The static_fields pointer sits at a build-dependent offset inside
@@ -628,136 +685,37 @@ static uint64_t FindNameOffsetByString(RemoteCall *remoteCall,
 // and returns its address (cached; runs at most once per process).
 static uintptr_t FindGameFacadeNameInImage(RemoteCall *remoteCall,
                                            uintptr_t base) {
-    if (gGameFacadeNameScanned)
-        return gGameFacadeNameAddress;
-    gGameFacadeNameScanned = true;
-    gGameFacadeNameAddress = 0;
-
-    if (!remoteCall || !validOffsetPtr(base))
-        return 0;
-
-    static const char kNeedle[] = "GameFacade";
-    static const size_t kNeedleLength = 10;
-
-    // mach_header_64: magic@0, ncmds@16, sizeofcmds@20
-    uint32_t header[8] = {0};
-    if (![remoteCall remoteRead:base to:header size:sizeof(header)])
-        return 0;
-    if (header[0] != 0xFEEDFACFu)
-        return 0;
-    uint32_t ncmds = header[4];
-    if (ncmds == 0 || ncmds > 256)
-        return 0;
-
-    struct ImageRange {
-        uint64_t vmaddr;
-        uint64_t vmsize;
-    };
-    ImageRange ranges[48];
-    int rangeCount = 0;
-    uint64_t preferredBase = 0;
-    bool havePreferred = false;
-
-    uintptr_t lcAddr = base + 32;  // sizeof(mach_header_64)
-    for (uint32_t i = 0; i < ncmds; ++i) {
-        uint32_t lc[2] = {0};
-        if (![remoteCall remoteRead:lcAddr to:lc size:sizeof(lc)])
-            break;
-        if (lc[1] < 8)
-            break;
-        if (lc[0] == 0x19 /* LC_SEGMENT_64 */ && lc[1] >= 72) {
-            // cmd@0, cmdsize@4, segname@8..23, vmaddr@24, vmsize@32, fileoff@40
-            uint64_t raw[6] = {0};
-            if (![remoteCall remoteRead:lcAddr to:raw size:sizeof(raw)])
-                break;
-            uint64_t vmaddr = raw[3];
-            uint64_t vmsize = raw[4];
-            uint64_t fileoff = raw[5];
-            if (fileoff == 0 && vmsize > 0 && !havePreferred) {
-                preferredBase = vmaddr;
-                havePreferred = true;
-            }
-            if (vmsize > 0 && rangeCount < 48) {
-                ranges[rangeCount].vmaddr = vmaddr;
-                ranges[rangeCount].vmsize = vmsize;
-                ++rangeCount;
-            }
-        }
-        lcAddr += lc[1];
-    }
-
-    if (!havePreferred || rangeCount == 0)
-        return 0;
-
-    uintptr_t slide = base - (uintptr_t)preferredBase;
-
-    static const size_t kChunk = 0x8000;  // 32 KB reads keep krw calls small
-    static const size_t kOverlap = 32;
-    static const uint64_t kScanCap = 0x40000000ULL;  // 1 GB hard cap
-    char *buffer = (char *)malloc(kChunk + kOverlap);
-    if (!buffer)
-        return 0;
-
-    uint64_t scanned = 0;
-    for (int r = 0; r < rangeCount && gGameFacadeNameAddress == 0; ++r) {
-        uintptr_t pos = (uintptr_t)ranges[r].vmaddr + slide;
-        uintptr_t end = pos + (uintptr_t)ranges[r].vmsize;
-        size_t carry = 0;
-
-        while (pos < end && gGameFacadeNameAddress == 0 &&
-               scanned < kScanCap) {
-            size_t want = kChunk;
-            if (pos + want > end)
-                want = (size_t)(end - pos);
-
-            if (![remoteCall remoteRead:pos
-                                      to:buffer + carry
-                                    size:want]) {
-                pos += want;
-                carry = 0;
-                continue;
-            }
-
-            size_t total = carry + want;
-            for (size_t i = 0; i + kNeedleLength <= total; ++i) {
-                if (memcmp(buffer + i, kNeedle, kNeedleLength) == 0) {
-                    gGameFacadeNameAddress = (pos - carry) + i;
-                    break;
-                }
-            }
-
-            scanned += want;
-            pos += want;
-            carry = total > kOverlap ? kOverlap : total;
-            memmove(buffer, buffer + total - carry, carry);
-        }
-    }
-
-    free(buffer);
-    return gGameFacadeNameAddress;
+    // In Unity Il2Cpp, class names are stored in global-metadata.dat and loaded into heap/metadata structures,
+    // not in the Mach-O __TEXT image. Return 0 immediately to avoid blocking IPC reads.
+    return 0;
 }
 
 // MARK: - Dynamic ARM64 Static Fields Resolution
 
-// Collects every value reachable through an ADRP + LDR/ADD pair in the first
-// 32 instructions. The first pair of a function is NOT necessarily the static
-// fields accessor, so callers verify each candidate instead of trusting one.
+// Collects candidates reachable through ADRP + LDR/ADD sequences in ARM64 instructions.
+// Pushes the data pointer, dereferenced values, and static_fields offsets.
 static int CollectArm64StaticCandidates(RemoteCall *remoteCall,
                                         uintptr_t funcAddr, uintptr_t *out,
                                         int maxOut) {
     if (!remoteCall || !validOffsetPtr(funcAddr) || !out || maxOut <= 0)
         return 0;
 
-    uint32_t insns[32] = {0};
+    uint32_t insns[64] = {0};
     if (![remoteCall remoteRead:funcAddr to:insns size:sizeof(insns)])
         return 0;
 
     uintptr_t adrpTargets[32] = {0};
+    uintptr_t regValues[32] = {0};
     int found = 0;
 
-    for (int i = 0; i < 32; ++i) {
+    for (int i = 0; i < 64 && found < maxOut; ++i) {
         uint32_t insn = insns[i];
         uintptr_t pc = funcAddr + (uintptr_t)i * 4;
+
+        // RET instruction: end of function
+        if (insn == 0xD65F03C0) {
+            break;
+        }
 
         // ADRP Xd, #imm
         if ((insn & 0x9F000000) == 0x90000000) {
@@ -770,34 +728,92 @@ static int CollectArm64StaticCandidates(RemoteCall *remoteCall,
             }
             imm <<= 12;
             adrpTargets[rd] = (pc & ~0xFFFULL) + imm;
+            regValues[rd] = 0;
             continue;
         }
 
-        // LDR Xt, [Xn, #imm12] (64-bit)
+        // LDR Xt, [Xn, #imm12] (64-bit unsigned offset: size=3, opc=01 -> 0xF9400000)
         if ((insn & 0xFFC00000) == 0xF9400000) {
+            uint32_t rt = insn & 0x1F;
             uint32_t rn = (insn >> 5) & 0x1F;
+            uint32_t imm12 = ((insn >> 10) & 0xFFF) << 3;
+
+            uintptr_t baseAddr = 0;
             if (adrpTargets[rn] != 0) {
-                uint32_t imm12 = ((insn >> 10) & 0xFFF) << 3;
-                uintptr_t ptrAddr = adrpTargets[rn] + imm12;
-                PushCandidate(out, &found, maxOut,
-                              ReadMemorySafe<uintptr_t>(remoteCall, ptrAddr));
+                baseAddr = adrpTargets[rn] + imm12;
+            } else if (regValues[rn] != 0) {
+                baseAddr = regValues[rn] + imm12;
             }
+
+            if (validOffsetPtr(baseAddr)) {
+                PushCandidate(out, &found, maxOut, baseAddr);
+                uintptr_t val = ReadMemorySafe<uintptr_t>(remoteCall, baseAddr);
+                if (validOffsetPtr(val)) {
+                    PushCandidate(out, &found, maxOut, val);
+                    regValues[rt] = val;
+                    // Dereferenced value
+                    uintptr_t deref = ReadMemorySafe<uintptr_t>(remoteCall, val);
+                    if (validOffsetPtr(deref)) {
+                        PushCandidate(out, &found, maxOut, deref);
+                    }
+                    // static_fields offset (0xB8)
+                    uintptr_t sf = ReadMemorySafe<uintptr_t>(remoteCall, val + kIl2CppClass_StaticFields);
+                    if (validOffsetPtr(sf)) {
+                        PushCandidate(out, &found, maxOut, sf);
+                    }
+                } else {
+                    regValues[rt] = 0;
+                }
+            } else {
+                regValues[rt] = 0;
+            }
+            if (rt != rn) {
+                adrpTargets[rt] = 0;
+            }
+            continue;
         }
 
-        // ADD Xd, Xn, #imm12 (64-bit)
+        // ADD Xd, Xn, #imm12 (64-bit: 0x91000000)
         if ((insn & 0xFF800000) == 0x91000000) {
+            uint32_t rd = insn & 0x1F;
             uint32_t rn = (insn >> 5) & 0x1F;
+            uint32_t imm12 = (insn >> 10) & 0xFFF;
+
+            uintptr_t baseAddr = 0;
             if (adrpTargets[rn] != 0) {
-                uint32_t imm12 = (insn >> 10) & 0xFFF;
-                uintptr_t targetAddr = adrpTargets[rn] + imm12;
-                if (validOffsetPtr(targetAddr)) {
-                    PushCandidate(out, &found, maxOut,
-                                  ReadMemorySafe<uintptr_t>(remoteCall,
-                                                            targetAddr));
-                    PushCandidate(out, &found, maxOut, targetAddr);
-                }
+                baseAddr = adrpTargets[rn] + imm12;
+            } else if (regValues[rn] != 0) {
+                baseAddr = regValues[rn] + imm12;
             }
+
+            if (validOffsetPtr(baseAddr)) {
+                PushCandidate(out, &found, maxOut, baseAddr);
+                regValues[rd] = baseAddr;
+                uintptr_t val = ReadMemorySafe<uintptr_t>(remoteCall, baseAddr);
+                if (validOffsetPtr(val)) {
+                    PushCandidate(out, &found, maxOut, val);
+                    uintptr_t deref = ReadMemorySafe<uintptr_t>(remoteCall, val);
+                    if (validOffsetPtr(deref)) {
+                        PushCandidate(out, &found, maxOut, deref);
+                    }
+                    uintptr_t sf = ReadMemorySafe<uintptr_t>(remoteCall, val + kIl2CppClass_StaticFields);
+                    if (validOffsetPtr(sf)) {
+                        PushCandidate(out, &found, maxOut, sf);
+                    }
+                }
+            } else {
+                regValues[rd] = 0;
+            }
+            if (rd != rn) {
+                adrpTargets[rd] = 0;
+            }
+            continue;
         }
+
+        // If another instruction writes to rd, invalidate cached state
+        uint32_t rd = insn & 0x1F;
+        adrpTargets[rd] = 0;
+        regValues[rd] = 0;
     }
 
     return found;
