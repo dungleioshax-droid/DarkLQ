@@ -303,29 +303,18 @@ static uint64_t gFreeFireKlassNameOffset = kIl2CppClass_Name;
 static uintptr_t gGameFacadeNameAddress = 0;
 static bool gGameFacadeNameScanned = false;
 
-static bool ReadIl2CppClassName(RemoteCall *remoteCall, uintptr_t object,
-                                char *out, size_t capacity) {
-    if (!remoteCall || !out || capacity == 0)
+static bool ReadKlassName(RemoteCall *remoteCall, uintptr_t klass,
+                          char *out, size_t capacity) {
+    if (!remoteCall || !validOffsetPtr(klass) || !out || capacity == 0)
         return false;
 
     out[0] = '\0';
-    if (!validOffsetPtr(object))
-        return false;
 
-    uintptr_t klass = ReadMemorySafe<uintptr_t>(remoteCall, object);
-    if (!validOffsetPtr(klass))
-        return false;
-
-    const uint64_t candidateOffsets[] = {
-        gFreeFireKlassNameOffset != 0 ? gFreeFireKlassNameOffset : kIl2CppClass_Name,
-        0x10, 0x08, 0x18, 0x20
-    };
-
-    for (int i = 0; i < 5; ++i) {
+    // Scan candidate offsets for class name.
+    // In Il2CppClass, name is at 0x10. We check 0x10 first, then 0x18, 0x20, 0x28, 0x30, 0x08.
+    const uint64_t candidateOffsets[] = { 0x10, 0x18, 0x20, 0x28, 0x30, 0x08 };
+    for (int i = 0; i < 6; ++i) {
         uint64_t off = candidateOffsets[i];
-        if (i > 0 && off == candidateOffsets[0])
-            continue;
-
         uintptr_t namePtr = ReadMemorySafe<uintptr_t>(remoteCall, klass + off);
         if (!validOffsetPtr(namePtr))
             continue;
@@ -341,15 +330,46 @@ static bool ReadIl2CppClassName(RemoteCall *remoteCall, uintptr_t object,
                 break;
             ++length;
         }
-        if (length > 0 && length < capacity && buffer[length] == '\0') {
-            memcpy(out, buffer, length);
-            out[length] = '\0';
-            gFreeFireKlassNameOffset = off;
-            return true;
+
+        if (length == 0 || length >= capacity || buffer[length] != '\0')
+            continue;
+
+        // Skip image/assembly names
+        if (strcmp(buffer, "Assembly-CSharp") == 0 ||
+            strstr(buffer, "Assembly-CSharp") != NULL ||
+            strstr(buffer, ".dll") != NULL) {
+            continue;
         }
+
+        // Skip common top-level namespaces
+        if (strcmp(buffer, "COW") == 0 ||
+            strcmp(buffer, "UnityEngine") == 0 ||
+            strcmp(buffer, "System") == 0) {
+            continue;
+        }
+
+        memcpy(out, buffer, length);
+        out[length] = '\0';
+        return true;
     }
 
     return false;
+}
+
+static bool ReadIl2CppClassName(RemoteCall *remoteCall, uintptr_t object,
+                                char *out, size_t capacity) {
+    if (!remoteCall || !out || capacity == 0)
+        return false;
+
+    out[0] = '\0';
+    if (!validOffsetPtr(object))
+        return false;
+
+    uintptr_t klass = ReadMemorySafe<uintptr_t>(remoteCall, object);
+    if (!validOffsetPtr(klass))
+        return false;
+
+    return ReadKlassName(remoteCall, klass, out, capacity);
 }
 
 static bool IsSubclassOf(RemoteCall *remoteCall, uintptr_t object,
@@ -359,15 +379,10 @@ static bool IsSubclassOf(RemoteCall *remoteCall, uintptr_t object,
 
     uintptr_t klass = ReadMemorySafe<uintptr_t>(remoteCall, object);
     for (int depth = 0; depth < 10 && validOffsetPtr(klass); ++depth) {
-        uintptr_t namePtr = ReadMemorySafe<uintptr_t>(
-            remoteCall, klass + gFreeFireKlassNameOffset);
-        if (validOffsetPtr(namePtr)) {
-            char buffer[64] = {0};
-            if ([remoteCall remoteRead:namePtr to:buffer size:sizeof(buffer) - 1]) {
-                buffer[sizeof(buffer) - 1] = '\0';
-                if (strstr(buffer, targetName) != NULL) {
-                    return true;
-                }
+        char buffer[64] = {0};
+        if (ReadKlassName(remoteCall, klass, buffer, sizeof(buffer))) {
+            if (strstr(buffer, targetName) != NULL) {
+                return true;
             }
         }
         klass = ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Parent);
@@ -575,28 +590,19 @@ static uintptr_t TryResolveGameFacadeFromKlass(RemoteCall *remoteCall,
     if (!remoteCall || !validOffsetPtr(klass))
         return 0;
 
-    for (uint64_t offset = 0x00; offset <= 0x40; offset += sizeof(uintptr_t)) {
-        uintptr_t namePtr = ReadMemorySafe<uintptr_t>(remoteCall, klass + offset);
-        if (!validOffsetPtr(namePtr))
-            continue;
-
-        char buf[32] = {0};
-        if ([remoteCall remoteRead:namePtr to:buf size:sizeof(buf) - 1]) {
-            buf[sizeof(buf) - 1] = '\0';
-            if (strcmp(buf, "GameFacade") == 0) {
-                gFreeFireKlassNameOffset = offset;
-                // Found GameFacade! Read static_fields at 0xB8
-                uintptr_t sf = ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_StaticFields);
-                if (validOffsetPtr(sf)) {
-                    return sf;
-                }
-                // Fallback: scan klass fields for static_fields block
-                for (uint64_t sfoff = 0x20; sfoff <= 0x280; sfoff += sizeof(uintptr_t)) {
-                    uintptr_t block = ReadMemorySafe<uintptr_t>(remoteCall, klass + sfoff);
-                    if (validOffsetPtr(block) && LooksLikeGameFacadeStaticBlock(remoteCall, block))
-                        return block;
-                }
-                return klass;
+    char className[64] = {0};
+    if (ReadKlassName(remoteCall, klass, className, sizeof(className))) {
+        if (strcmp(className, "GameFacade") == 0) {
+            // Found GameFacade! Read static_fields at 0xB8
+            uintptr_t sf = ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_StaticFields);
+            if (validOffsetPtr(sf)) {
+                return sf;
+            }
+            // Fallback: scan klass fields for static_fields block
+            for (uint64_t sfoff = 0x50; sfoff <= 0x200; sfoff += sizeof(uintptr_t)) {
+                uintptr_t block = ReadMemorySafe<uintptr_t>(remoteCall, klass + sfoff);
+                if (validOffsetPtr(block) && LooksLikeGameFacadeStaticBlock(remoteCall, block))
+                    return block;
             }
         }
     }

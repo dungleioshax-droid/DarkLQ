@@ -742,9 +742,7 @@ NS_ASSUME_NONNULL_BEGIN
 
     if (validOffsetPtr(currentMatchGame) && hasMatchGameClass && !isMatchGame) {
         // The dump offset points at another object in this build; repair it with
-        // the field that verifiably holds a MatchGame reference. When nothing
-        // verifies (renamed classes) the dump offset is kept, so behaviour never
-        // gets worse than a plain offset read.
+        // the field that verifiably holds a MatchGame reference.
         uint64_t discovered = 0;
         if ([self discoveryDue]) {
             discovered = FindIl2CppFieldMatchingFrom(
@@ -756,21 +754,29 @@ NS_ASSUME_NONNULL_BEGIN
             gFreeFireMatchGameFieldOffset = discovered;
             currentMatchGame = ReadMemorySafe<uintptr_t>(
                 remoteCall, staticFields + discovered);
+            hasMatchGameClass =
+                ReadIl2CppClassName(remoteCall, currentMatchGame, matchGameClass,
+                                    sizeof(matchGameClass));
+            isMatchGame = hasMatchGameClass &&
+                (strstr(matchGameClass, "MatchGame") != NULL ||
+                 IsSubclassOf(remoteCall, currentMatchGame, "MatchGame") ||
+                 IsSubclassOf(remoteCall, currentMatchGame, "COWGameBase"));
             [self reportDiagnostics:
                       [NSString stringWithFormat:
-                                    @"MatchGame field repaired to 0x%llx",
-                                    (unsigned long long)discovered]];
-        } else {
-            [self reportStage:
-                      [NSString stringWithFormat:@"stage 2/6: field 0x%llx "
-                                                 @"holds '%s', not MatchGame",
-                                                 (unsigned long long)matchGameOffset,
-                                                 matchGameClass]];
+                                    @"MatchGame field repaired to 0x%llx (class='%s')",
+                                    (unsigned long long)discovered, matchGameClass]];
         }
     }
 
-    if (!validOffsetPtr(currentMatchGame)) {
-        [self reportStage:@"stage 2/6: no CurrentMatchGame (lobby)"];
+    if (!validOffsetPtr(currentMatchGame) || !isMatchGame) {
+        if (!validOffsetPtr(currentMatchGame)) {
+            [self reportStage:@"stage 2/6: no CurrentMatchGame (lobby)"];
+        } else {
+            [self reportStage:
+                      [NSString stringWithFormat:@"stage 2/6: field 0x%llx holds '%s', not MatchGame (in lobby/waiting)",
+                                                 (unsigned long long)matchGameOffset,
+                                                 matchGameClass]];
+        }
         @synchronized(self) {
             self.hasValidFrame = NO;
             [self clearOverlayTargets];
@@ -942,15 +948,8 @@ NS_ASSUME_NONNULL_BEGIN
         if (!validOffsetPtr(klass))
             continue;
 
-        uintptr_t namePtr =
-            ReadMemorySafe<uintptr_t>(remoteCall, klass + gFreeFireKlassNameOffset);
-        if (!validOffsetPtr(namePtr))
-            continue;
-
         char className[64] = {0};
-        if (![remoteCall remoteRead:namePtr
-                                 to:className
-                               size:sizeof(className) - 1])
+        if (!ReadKlassName(remoteCall, klass, className, sizeof(className)))
             continue;
 
         if (sampleClasses.size() < 96 &&
