@@ -163,7 +163,7 @@ struct LogScreen: View {
                                 .fill(isSelected ? (palette.isDark ? Color.white.opacity(0.18) : Color.white.opacity(0.95)) : palette.glassCardSubtle)
                                 .overlay(
                                     Capsule()
-                                        .stroke(isSelected ? palette.glassBorderHighlight : palette.glassBorder, lineWidth: 1)
+                                        .stroke(isSelected ? palette.glassBorderStrong : palette.glassBorder, lineWidth: 1)
                                 )
                         )
                 }
