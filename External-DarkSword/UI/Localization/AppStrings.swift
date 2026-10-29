@@ -153,6 +153,14 @@ enum AppStrings {
         text(language, vietnamese: "Đang mở...", english: "Opening...")
     }
 
+    static func connected(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Đã kết nối", english: "Connected")
+    }
+
+    static func disconnected(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Đã ngắt kết nối", english: "Disconnected")
+    }
+
     static func disconnectAction(_ language: AppLanguage) -> String {
         text(language, vietnamese: "Ngắt kết nối", english: "Disconnect")
     }

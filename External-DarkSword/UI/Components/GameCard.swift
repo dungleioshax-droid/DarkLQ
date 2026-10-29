@@ -51,7 +51,7 @@ struct GameCard: View {
                 .overlay(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .stroke(
-                            isConnected ? palette.accent : palette.glassBorderHighlight,
+                            isConnected ? palette.accent : palette.border,
                             lineWidth: isConnected ? 1.5 : 1
                         )
                 )

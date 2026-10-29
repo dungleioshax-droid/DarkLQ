@@ -65,172 +65,184 @@ struct LogScreen: View {
     var body: some View {
         ZStack {
             VStack(spacing: 16) {
-                // Console Header Card
-                VStack(spacing: 12) {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack(spacing: 8) {
-                                Image(systemName: "terminal.fill")
-                                    .font(.system(size: 16, weight: .bold))
-                                    .foregroundColor(palette.accent)
-
-                                Text(AppStrings.logTitle(language))
-                                    .font(.system(size: 22, weight: .black, design: .rounded))
-                                    .foregroundColor(palette.primaryText)
-                            }
-
-                            Text("\(filteredLines.count) \(AppStrings.text(language, vietnamese: "dòng ghi nhận", english: "recorded lines"))")
-                                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                                .foregroundColor(palette.mutedText)
-                        }
-
-                        Spacer()
-
-                        // Action Buttons (Copy & Clear)
-                        HStack(spacing: 8) {
-                            Button(action: copyLogsToClipboard) {
-                                ZStack {
-                                    Circle()
-                                        .fill(palette.glassCard)
-                                        .frame(width: 36, height: 36)
-                                        .overlay(Circle().stroke(palette.glassBorder, lineWidth: 1))
-
-                                    Image(systemName: "doc.on.doc.fill")
-                                        .font(.system(size: 13, weight: .bold))
-                                        .foregroundColor(palette.accent)
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(manager.logText.isEmpty)
-                            .accessibilityLabel(AppStrings.copyLogAccessibility(language))
-
-                            Button(action: manager.clearLog) {
-                                ZStack {
-                                    Circle()
-                                        .fill(palette.glassCard)
-                                        .frame(width: 36, height: 36)
-                                        .overlay(Circle().stroke(palette.glassBorder, lineWidth: 1))
-
-                                    Image(systemName: "trash.fill")
-                                        .font(.system(size: 13, weight: .bold))
-                                        .foregroundColor(manager.logText.isEmpty ? palette.mutedText : palette.danger)
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(manager.logText.isEmpty)
-                            .accessibilityLabel(AppStrings.clearLogAccessibility(language))
-                        }
-                    }
-                    .padding(.horizontal, 22)
-                    .padding(.top, 16)
-
-                    // Filter Segmented Chips
-                    HStack(spacing: 6) {
-                        ForEach(LogFilter.allCases, id: \.self) { filter in
-                            Button {
-                                withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
-                                    selectedFilter = filter
-                                }
-                            } label: {
-                                Text(filter.localizedTitle(language))
-                                    .font(.system(size: 12, weight: selectedFilter == filter ? .bold : .medium, design: .rounded))
-                                    .foregroundColor(
-                                        selectedFilter == filter
-                                            ? (palette.isDark ? .white : .black)
-                                            : palette.secondaryText
-                                    )
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 6)
-                                    .background(
-                                        Capsule()
-                                            .fill(
-                                                selectedFilter == filter
-                                                    ? (palette.isDark ? Color.white.opacity(0.18) : Color.white.opacity(0.95))
-                                                    : palette.glassCardSubtle
-                                            )
-                                            .overlay(
-                                                Capsule()
-                                                    .stroke(
-                                                        selectedFilter == filter ? palette.glassBorderHighlight : palette.glassBorder,
-                                                        lineWidth: 1
-                                                    )
-                                            )
-                                    )
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        Spacer()
-                    }
-                    .padding(.horizontal, 22)
-                }
-
-                // Frosted Glass Terminal Console Box
-                GlassCard(palette: palette, cornerRadius: 20) {
-                    ScrollViewReader { proxy in
-                        ScrollView {
-                            if filteredLines.isEmpty {
-                                VStack(spacing: 12) {
-                                    Spacer(minLength: 40)
-                                    Image(systemName: "text.badge.checkmark")
-                                        .font(.system(size: 38, weight: .medium))
-                                        .foregroundColor(palette.mutedText)
-
-                                    Text(AppStrings.noLogs(language))
-                                        .font(.system(size: 13, weight: .medium, design: .monospaced))
-                                        .foregroundColor(palette.mutedText)
-                                    Spacer(minLength: 40)
-                                }
-                                .frame(maxWidth: .infinity)
-                            } else {
-                                LazyVStack(alignment: .leading, spacing: 5) {
-                                    ForEach(Array(filteredLines.enumerated()), id: \.offset) { index, line in
-                                        HStack(alignment: .top, spacing: 8) {
-                                            Text(String(format: "%03d", index + 1))
-                                                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                                .foregroundColor(palette.mutedText.opacity(0.6))
-                                                .frame(width: 26, alignment: .trailing)
-
-                                            Text(line)
-                                                .font(.system(size: 11.5, weight: .regular, design: .monospaced))
-                                                .foregroundColor(lineColor(for: line))
-                                                .textSelection(.enabled)
-                                                .frame(maxWidth: .infinity, alignment: .leading)
-                                        }
-                                        .id(index)
-                                    }
-                                }
-                                .padding(.vertical, 8)
-                            }
-                        }
-                    }
-                }
-                .padding(.horizontal, 18)
-                .padding(.bottom, 96) // Space for bottom tab bar
+                headerAreaView
+                terminalCardView
             }
 
-            // Copied Toast Overlay
             if showCopiedToast {
-                VStack {
-                    Spacer()
+                toastView
+            }
+        }
+    }
+
+    private var headerAreaView: some View {
+        VStack(spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 8) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundColor(palette.success)
-                        Text(AppStrings.copiedToast(language))
-                            .font(.system(size: 13, weight: .bold, design: .rounded))
-                            .foregroundColor(.white)
+                        Image(systemName: "terminal.fill")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundColor(palette.accent)
+
+                        Text(AppStrings.logTitle(language))
+                            .font(.system(size: 22, weight: .black, design: .rounded))
+                            .foregroundColor(palette.primaryText)
                     }
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 10)
-                    .background(
-                        Capsule()
-                            .fill(Color.black.opacity(0.85))
-                            .overlay(Capsule().stroke(palette.glassBorderHighlight, lineWidth: 1))
-                            .shadow(color: Color.black.opacity(0.4), radius: 10, x: 0, y: 4)
-                    )
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .padding(.bottom, 108)
+
+                    Text("\(filteredLines.count) \(AppStrings.text(language, vietnamese: "dòng ghi nhận", english: "recorded lines"))")
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundColor(palette.mutedText)
+                }
+
+                Spacer()
+
+                HStack(spacing: 8) {
+                    copyButton
+                    clearButton
                 }
             }
+            .padding(.horizontal, 22)
+            .padding(.top, 16)
+
+            filterChipsRow
+        }
+    }
+
+    private var copyButton: some View {
+        Button(action: copyLogsToClipboard) {
+            ZStack {
+                Circle()
+                    .fill(palette.glassCard)
+                    .frame(width: 36, height: 36)
+                    .overlay(Circle().stroke(palette.glassBorder, lineWidth: 1))
+
+                Image(systemName: "doc.on.doc.fill")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(palette.accent)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(manager.logText.isEmpty)
+        .accessibilityLabel(AppStrings.copyLogAccessibility(language))
+    }
+
+    private var clearButton: some View {
+        Button(action: manager.clearLog) {
+            ZStack {
+                Circle()
+                    .fill(palette.glassCard)
+                    .frame(width: 36, height: 36)
+                    .overlay(Circle().stroke(palette.glassBorder, lineWidth: 1))
+
+                Image(systemName: "trash.fill")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(manager.logText.isEmpty ? palette.mutedText : palette.danger)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(manager.logText.isEmpty)
+        .accessibilityLabel(AppStrings.clearLogAccessibility(language))
+    }
+
+    private var filterChipsRow: some View {
+        HStack(spacing: 6) {
+            ForEach(LogFilter.allCases, id: \.self) { filter in
+                let isSelected = selectedFilter == filter
+                Button {
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
+                        selectedFilter = filter
+                    }
+                } label: {
+                    Text(filter.localizedTitle(language))
+                        .font(.system(size: 12, weight: isSelected ? .bold : .medium, design: .rounded))
+                        .foregroundColor(isSelected ? (palette.isDark ? .white : .black) : palette.secondaryText)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(
+                            Capsule()
+                                .fill(isSelected ? (palette.isDark ? Color.white.opacity(0.18) : Color.white.opacity(0.95)) : palette.glassCardSubtle)
+                                .overlay(
+                                    Capsule()
+                                        .stroke(isSelected ? palette.glassBorderHighlight : palette.glassBorder, lineWidth: 1)
+                                )
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 22)
+    }
+
+    private var terminalCardView: some View {
+        GlassCard(palette: palette, cornerRadius: 20) {
+            ScrollView {
+                if filteredLines.isEmpty {
+                    emptyStateView
+                } else {
+                    LazyVStack(alignment: .leading, spacing: 5) {
+                        ForEach(Array(filteredLines.enumerated()), id: \.offset) { index, line in
+                            logLineRow(index: index, line: line)
+                        }
+                    }
+                    .padding(.vertical, 8)
+                }
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.bottom, 96)
+    }
+
+    private var emptyStateView: some View {
+        VStack(spacing: 12) {
+            Spacer(minLength: 40)
+            Image(systemName: "text.badge.checkmark")
+                .font(.system(size: 38, weight: .medium))
+                .foregroundColor(palette.mutedText)
+
+            Text(AppStrings.noLogs(language))
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .foregroundColor(palette.mutedText)
+            Spacer(minLength: 40)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func logLineRow(index: Int, line: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(String(format: "%03d", index + 1))
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundColor(palette.mutedText.opacity(0.6))
+                .frame(width: 26, alignment: .trailing)
+
+            Text(line)
+                .font(.system(size: 11.5, weight: .regular, design: .monospaced))
+                .foregroundColor(lineColor(for: line))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var toastView: some View {
+        VStack {
+            Spacer()
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(palette.success)
+                Text(AppStrings.copiedToast(language))
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 10)
+            .background(
+                Capsule()
+                    .fill(Color.black.opacity(0.85))
+                    .overlay(Capsule().stroke(palette.glassBorderHighlight, lineWidth: 1))
+                    .shadow(color: Color.black.opacity(0.4), radius: 10, x: 0, y: 4)
+            )
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .padding(.bottom, 108)
         }
     }
 
