@@ -29,6 +29,24 @@ enum AppStrings {
         language == .vietnamese ? vietnamese : english
     }
 
+    // MARK: - Navigation Tabs
+    static func tabDashboard(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Khai thác", english: "Exploit")
+    }
+
+    static func tabGames(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Trò chơi", english: "Games")
+    }
+
+    static func tabLogs(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Nhật ký", english: "Logs")
+    }
+
+    static func tabSettings(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Cài đặt", english: "Settings")
+    }
+
+    // MARK: - Toggles & Controls
     static func languageToggleCode(_ language: AppLanguage) -> String {
         language == .vietnamese ? "EN" : "VI"
     }
@@ -45,18 +63,7 @@ enum AppStrings {
         text(language, vietnamese: "Đổi giao diện", english: "Toggle theme")
     }
 
-    static func logTitle(_ language: AppLanguage) -> String {
-        text(language, vietnamese: "Nhật ký", english: "Log")
-    }
-
-    static func clearLogAccessibility(_ language: AppLanguage) -> String {
-        text(language, vietnamese: "Xóa log", english: "Clear log")
-    }
-
-    static func noLogs(_ language: AppLanguage) -> String {
-        text(language, vietnamese: "Chưa có log", english: "No logs")
-    }
-
+    // MARK: - Dashboard / Exploit Screen
     static func exploitAction(_ language: AppLanguage) -> String {
         text(
             language,
@@ -65,18 +72,230 @@ enum AppStrings {
         )
     }
 
-    static func continueAction(_ language: AppLanguage) -> String {
-        text(language, vietnamese: "Tiếp tục", english: "Continue")
+    static func exploitRunning(_ language: AppLanguage) -> String {
+        text(
+            language,
+            vietnamese: "Đang tấn công kernel...",
+            english: "Exploiting kernel..."
+        )
     }
 
+    static func continueAction(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Xem danh sách game", english: "View Games")
+    }
+
+    static func kernelMetricsTitle(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Thông số Kernel", english: "Kernel Metrics")
+    }
+
+    static func deviceTitle(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Thiết bị", english: "Device")
+    }
+
+    static func deviceStatusTitle(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Trạng thái thiết bị", english: "Device Status")
+    }
+
+    static func keepAliveTitle(_ language: AppLanguage) -> String {
+        text(
+            language,
+            vietnamese: "Chạy ngầm liên tục (Keep-Alive)",
+            english: "Background Keep-Alive"
+        )
+    }
+
+    static func keepAliveDesc(_ language: AppLanguage) -> String {
+        text(
+            language,
+            vietnamese: "Giữ ứng dụng luôn hoạt động để duy trì hook overlay",
+            english: "Keeps app alive in background to maintain overlay hooks"
+        )
+    }
+
+    static func activeSessionTitle(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Phiên kết nối hoạt động", english: "Active Connection Session")
+    }
+
+    static func viewGameControls(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Mở bảng điều khiển Game", english: "Open Game Panel")
+    }
+
+    // MARK: - Games Screen
     static func gamesTitle(_ language: AppLanguage) -> String {
-        text(language, vietnamese: "Trò chơi", english: "Games")
+        text(language, vietnamese: "Trò chơi hỗ trợ", english: "Supported Games")
+    }
+
+    static func gamesSubtitle(_ language: AppLanguage) -> String {
+        text(
+            language,
+            vietnamese: "Tự động khởi động và liên kết mod với ứng dụng",
+            english: "Launch and automatically inject mod overlay"
+        )
+    }
+
+    static func aovRenderModeTitle(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Chế độ Render AoV", english: "AoV Render Mode")
+    }
+
+    static func renderInternal(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Internal Hook", english: "Internal Hook")
+    }
+
+    static func renderSpringboard(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "SpringBoard Overlay", english: "SpringBoard Overlay")
+    }
+
+    static func launchGameAction(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Mở game & Hook", english: "Launch & Hook")
+    }
+
+    static func gameOpeningAction(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Đang mở...", english: "Opening...")
     }
 
     static func disconnectAction(_ language: AppLanguage) -> String {
         text(language, vietnamese: "Ngắt kết nối", english: "Disconnect")
     }
 
+    static func tuningFeaturesTitle(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Tùy chỉnh tính năng trong game", english: "In-Game Feature Tuning")
+    }
+
+    static func espOverlay(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Hiển thị ESP", english: "ESP Overlay")
+    }
+
+    static func hackMap(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Bản đồ nhỏ (Hack Map)", english: "Mini-Map Hack")
+    }
+
+    static func espSnaplines(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Đường kẻ (Snaplines)", english: "Snaplines")
+    }
+
+    static func espBoxes(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Khung hộp (2D Box)", english: "2D Box")
+    }
+
+    static func espHealth(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Thanh máu (HP)", english: "Health Bar")
+    }
+
+    static func espName(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Tên người chơi", english: "Player Name")
+    }
+
+    static func espDistance(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Khoảng cách (Distance)", english: "Distance")
+    }
+
+    static func cameraHeightTitle(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Góc nhìn Camera", english: "Camera Height")
+    }
+
+    // MARK: - Logs Screen
+    static func logTitle(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Nhật ký hệ thống", english: "System Console")
+    }
+
+    static func clearLogAccessibility(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Xóa toàn bộ log", english: "Clear all logs")
+    }
+
+    static func copyLogAccessibility(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Sao chép log", english: "Copy logs")
+    }
+
+    static func copiedToast(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Đã sao chép vào bộ nhớ tạm!", english: "Copied to clipboard!")
+    }
+
+    static func noLogs(_ language: AppLanguage) -> String {
+        text(
+            language,
+            vietnamese: "Chưa có bản ghi nhật ký nào",
+            english: "No console logs recorded yet"
+        )
+    }
+
+    static func filterAll(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Tất cả", english: "All")
+    }
+
+    static func filterKernel(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Kernel", english: "Kernel")
+    }
+
+    static func filterGames(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Game", english: "Game")
+    }
+
+    static func filterErrors(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Lỗi", english: "Error")
+    }
+
+    // MARK: - Settings Screen
+    static func settingsTitle(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Cài đặt & Giới thiệu", english: "Settings & About")
+    }
+
+    static func appearanceSection(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Giao diện hiển thị", english: "Appearance")
+    }
+
+    static func themeDarkGlass(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Kính tối (Dark Glass)", english: "Dark Glass")
+    }
+
+    static func themeLightGlass(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Kính sáng (Light Glass)", english: "Light Glass")
+    }
+
+    static func languageSection(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Ngôn ngữ", english: "Language")
+    }
+
+    static func advancedSection(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Khai thác & Kết nối", english: "Kernel & Connection")
+    }
+
+    static func migBypassTitle(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Vượt qua MIG Filter", english: "MIG Filter Bypass")
+    }
+
+    static func migBypassDesc(_ language: AppLanguage) -> String {
+        text(
+            language,
+            vietnamese: "Bỏ qua bộ lọc cổng MIG để tăng tỷ lệ thành công của RemoteCall",
+            english: "Bypass MIG port filtering to improve RemoteCall reliability"
+        )
+    }
+
+    static func targetProcessTitle(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Tiến trình mục tiêu", english: "Target Process")
+    }
+
+    static func socketClientsTitle(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Overlay Clients kết nối", english: "Connected Overlay Clients")
+    }
+
+    static func aboutAppSection(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Về ứng dụng DarkSword", english: "About DarkSword")
+    }
+
+    static func versionTitle(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Phiên bản", english: "Version")
+    }
+
+    static func architectureTitle(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Kiến trúc hỗ trợ", english: "Architecture")
+    }
+
+    static func devName(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Tác giả phát triển", english: "Lead Developer")
+    }
+
+    // MARK: - Alert & Status Helpers
     static func gameLaunchFailureTitle(_ language: AppLanguage) -> String {
         text(
             language,
@@ -159,10 +378,6 @@ enum AppStrings {
         default:
             return status
         }
-    }
-
-    static func deviceTitle(_ language: AppLanguage) -> String {
-        text(language, vietnamese: "Thiết bị", english: "Device")
     }
 
     static func remoteCallStatus(

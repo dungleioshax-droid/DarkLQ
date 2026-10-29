@@ -23,6 +23,7 @@ $(APPLICATION_NAME)_FILES = \
 	UI/Screens/ExploitScreen.swift \
 	UI/Screens/GameListScreen.swift \
 	UI/Screens/LogScreen.swift \
+	UI/Screens/SettingsScreen.swift \
 	DarkSwordManager.swift \
 	External_DarkSwordApp.swift \
 	funcs/keepalive.swift \

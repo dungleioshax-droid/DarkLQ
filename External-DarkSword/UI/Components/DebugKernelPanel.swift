@@ -13,46 +13,62 @@ struct DebugKernelPanel: View {
     let language: AppLanguage
 
     var body: some View {
-        VStack(spacing: 10) {
-            DebugRow(
-                title: AppStrings.deviceTitle(language),
-                value: manager.supportStatus.deviceIdentifier,
-                palette: palette
-            )
-            DebugRow(
-                title: AppStrings.ios,
-                value: manager.supportStatus.osVersion,
-                palette: palette
-            )
-            DebugRow(
-                title: AppStrings.kernelBase,
-                value: manager.kernelBaseText,
-                palette: palette
-            )
-            DebugRow(
-                title: AppStrings.kernelSlide,
-                value: manager.kernelSlideText,
-                palette: palette
-            )
-            DebugRow(
-                title: AppStrings.remoteCall,
-                value: AppStrings.remoteCallStatus(
-                    connected: manager.remoteConnected,
-                    process: manager.connectedProcess,
-                    language: language
-                ),
-                palette: palette
-            )
+        GlassCard(palette: palette, cornerRadius: 18) {
+            VStack(spacing: 12) {
+                HStack {
+                    Image(systemName: "cpu.fill")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(palette.accent)
+
+                    Text(AppStrings.kernelMetricsTitle(language))
+                        .font(.system(size: 13, weight: .bold, design: .rounded))
+                        .foregroundColor(palette.primaryText)
+
+                    Spacer()
+
+                    GlassBadge(
+                        title: manager.supportStatus.stateText,
+                        color: manager.supportStatus.isSupported ? palette.success : palette.danger,
+                        palette: palette
+                    )
+                }
+
+                Divider()
+                    .background(palette.glassBorder)
+
+                VStack(spacing: 9) {
+                    DebugRow(
+                        title: AppStrings.deviceTitle(language),
+                        value: manager.supportStatus.deviceIdentifier,
+                        palette: palette
+                    )
+                    DebugRow(
+                        title: AppStrings.ios,
+                        value: manager.supportStatus.osVersion,
+                        palette: palette
+                    )
+                    DebugRow(
+                        title: AppStrings.kernelBase,
+                        value: manager.kernelBaseText,
+                        palette: palette
+                    )
+                    DebugRow(
+                        title: AppStrings.kernelSlide,
+                        value: manager.kernelSlideText,
+                        palette: palette
+                    )
+                    DebugRow(
+                        title: AppStrings.remoteCall,
+                        value: AppStrings.remoteCallStatus(
+                            connected: manager.remoteConnected,
+                            process: manager.connectedProcess,
+                            language: language
+                        ),
+                        palette: palette
+                    )
+                }
+            }
         }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(palette.card)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(palette.border, lineWidth: 1)
-                )
-        )
     }
 }
 
