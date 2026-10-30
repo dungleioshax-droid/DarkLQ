@@ -772,6 +772,33 @@ NS_ASSUME_NONNULL_BEGIN
     }
 
     if (!validOffsetPtr(currentMatchGame) || !isMatchGame) {
+        // Training and some in-game modes leave CurrentMatchGame unset but
+        // still expose a game instance through CurrentGame that owns the
+        // replication entities. Use it only when it verifiably has a player
+        // dictionary, so the lobby FrontEndGame is never mistaken for a match.
+        uintptr_t currentGame = ReadMemorySafe<uintptr_t>(
+            remoteCall, staticFields + kGameFacadeStatic_CurrentGame);
+        if (validOffsetPtr(currentGame)) {
+            uint64_t entityField = FindIl2CppFieldMatching(
+                remoteCall, currentGame, 0x300, LooksLikePlayerDictionary);
+            if (entityField != 0) {
+                currentMatchGame = currentGame;
+                matchGameOffset = kGameFacadeStatic_CurrentGame;
+                hasMatchGameClass = ReadIl2CppClassName(
+                    remoteCall, currentMatchGame, matchGameClass,
+                    sizeof(matchGameClass));
+                isMatchGame = YES;
+                [self reportDiagnostics:
+                          [NSString stringWithFormat:
+                                        @"Using CurrentGame as match context "
+                                        @"(field 0x%llx holds a player "
+                                        @"dictionary)",
+                                        (unsigned long long)entityField]];
+            }
+        }
+    }
+
+    if (!validOffsetPtr(currentMatchGame) || !isMatchGame) {
         if (!validOffsetPtr(currentMatchGame)) {
             [self reportStage:@"stage 2/6: no CurrentMatchGame (lobby)"];
         } else {
