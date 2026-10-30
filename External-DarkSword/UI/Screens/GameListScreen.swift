@@ -26,8 +26,10 @@ struct GameListScreen: View {
         let _ = manager.gameStatusVersion
         let aovGame = manager.aovGameStatus()
         let freeFireGame = manager.freeFireGameStatus()
-        let isAoVConnected = manager.remoteConnected && manager.connectedProcess.contains(manager.aovProcess)
-        let isFreeFireConnected = manager.remoteConnected && manager.connectedProcess.contains(manager.freeFireProcess)
+        let isAoVConnected = manager.remoteConnected
+            && manager.connectedProcess.lowercased().contains(manager.aovProcess.lowercased())
+        let isFreeFireConnected = manager.remoteConnected
+            && manager.connectedProcess.lowercased().contains(manager.freeFireProcess.lowercased())
 
         ScrollView {
             VStack(spacing: 20) {

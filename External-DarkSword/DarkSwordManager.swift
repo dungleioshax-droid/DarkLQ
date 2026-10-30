@@ -392,7 +392,7 @@ final class DarkSwordManager: ObservableObject {
 
     var isConnectedToAoV: Bool {
         let process = aovProcess.trimmingCharacters(in: .whitespacesAndNewlines)
-        return remoteConnected && connectedProcess == process
+        return remoteConnected && connectedProcess.lowercased() == process.lowercased()
     }
 
     var aovGameCellStatus: String? {
@@ -528,7 +528,8 @@ final class DarkSwordManager: ObservableObject {
 
     var isConnectedToFreeFire: Bool {
         let process = resolvedFreeFireProcessName()
-        return remoteConnected && connectedProcess == process
+        return remoteConnected
+            && connectedProcess.lowercased() == process.lowercased()
     }
 
     var freeFireGameCellStatus: String? {

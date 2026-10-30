@@ -76,6 +76,54 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
+static bool FreeFireStaticBlockHasGameSlot(RemoteCall *remoteCall, uintptr_t block) {
+    if (!remoteCall || !validOffsetPtr(block))
+        return false;
+
+    // A real GameFacade static block holds a BaseGame/MatchGame instance in
+    // one of its first two slots. Reject blocks that only happen to look
+    // right because of string fields or an integer in the game slot.
+    for (uint64_t slot = 0x0; slot <= 0x8; slot += 0x8) {
+        uintptr_t value = ReadMemorySafe<uintptr_t>(remoteCall, block + slot);
+        if (value == 0)
+            continue;
+        if (!validOffsetPtr(value))
+            continue;
+
+        char name[64] = {0};
+        if (ReadIl2CppClassName(remoteCall, value, name, sizeof(name)) &&
+            strstr(name, "Game") != NULL) {
+            return true;
+        }
+    }
+
+    // Loose fallback: a block with a plausible UID and at least two C# string
+    // fields is almost certainly GameFacade's static storage, even if the
+    // game slot has not been populated yet.
+    uint64_t uid = ReadMemorySafe<uint64_t>(remoteCall, block + 0x58);
+    if (uid > 10000000ULL && uid < 10000000000000ULL) {
+        int stringMatches = 0;
+        for (uint64_t slot = 0x10; slot <= 0x40; slot += sizeof(uintptr_t)) {
+            uintptr_t strObj =
+                ReadMemorySafe<uintptr_t>(remoteCall, block + slot);
+            if (!validOffsetPtr(strObj))
+                continue;
+            int32_t strLen =
+                ReadMemorySafe<int32_t>(remoteCall, strObj + 0x10);
+            if (strLen > 0 && strLen < 128) {
+                uint16_t firstChar =
+                    ReadMemorySafe<uint16_t>(remoteCall, strObj + 0x14);
+                if (firstChar >= 0x20 && firstChar <= 0x7E)
+                    ++stringMatches;
+            }
+        }
+        if (stringMatches >= 2)
+            return true;
+    }
+
+    return false;
+}
+
 @implementation FreeFireManager
 
 - (instancetype)initWithRemoteCall:(RemoteCall *)remoteCall {
@@ -510,13 +558,16 @@ NS_ASSUME_NONNULL_BEGIN
         }
 
         // 4. Is candidate directly the static_fields block?
-        if (LooksLikeGameFacadeStaticBlock(remoteCall, candidate)) {
+        if (LooksLikeGameFacadeStaticBlock(remoteCall, candidate) &&
+            FreeFireStaticBlockHasGameSlot(remoteCall, candidate)) {
             staticFields = candidate;
             break;
         }
 
         // 5. Is *candidate the static_fields block?
-        if (validOffsetPtr(deref1) && LooksLikeGameFacadeStaticBlock(remoteCall, deref1)) {
+        if (validOffsetPtr(deref1) &&
+            LooksLikeGameFacadeStaticBlock(remoteCall, deref1) &&
+            FreeFireStaticBlockHasGameSlot(remoteCall, deref1)) {
             staticFields = deref1;
             break;
         }

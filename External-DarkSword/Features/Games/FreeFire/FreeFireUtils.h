@@ -93,9 +93,60 @@ static bool ReadValidMatrix(RemoteCall *remoteCall, uintptr_t address,
     return magnitude > 0.5f && magnitude < 1.0e8f;
 }
 
+static bool FreeFireStaticBlockHasGameSlot(RemoteCall *remoteCall, uintptr_t block) {
+    if (!remoteCall || !validOffsetPtr(block))
+        return false;
+
+    for (uint64_t slot = 0x0; slot <= 0x8; slot += 0x8) {
+        uintptr_t value = ReadMemorySafe<uintptr_t>(remoteCall, block + slot);
+        if (value == 0)
+            return true;
+        if (!validOffsetPtr(value))
+            continue;
+
+        char name[64] = {0};
+        if (ReadIl2CppClassName(remoteCall, value, name, sizeof(name)) &&
+            strstr(name, "Game") != NULL) {
+            return true;
+        }
+    }
+
+    uint64_t uid = ReadMemorySafe<uint64_t>(remoteCall, block + 0x58);
+    if (uid > 10000000ULL && uid < 10000000000000ULL) {
+        int stringMatches = 0;
+        for (uint64_t slot = 0x10; slot <= 0x40; slot += sizeof(uintptr_t)) {
+            uintptr_t strObj =
+                ReadMemorySafe<uintptr_t>(remoteCall, block + slot);
+            if (!validOffsetPtr(strObj))
+                continue;
+            int32_t strLen =
+                ReadMemorySafe<int32_t>(remoteCall, strObj + 0x10);
+            if (strLen > 0 && strLen < 128) {
+                uint16_t firstChar =
+                    ReadMemorySafe<uint16_t>(remoteCall, strObj + 0x14);
+                if (firstChar >= 0x20 && firstChar <= 0x7E)
+                    ++stringMatches;
+            }
+        }
+        if (stringMatches >= 2)
+            return true;
+    }
+
+    return false;
+}
+
 static bool LooksLikeViewProjection(const float *matrix) {
     return fabsf(matrix[11]) > 0.01f || fabsf(matrix[15]) < 0.95f;
 }
+
+// Native camera matrix offsets drift between Unity builds; remember the ones
+// that actually produced a valid view-projection matrix so we don't keep
+// guessing every frame.
+static uint64_t gFreeFireNativeCameraViewOffset = kNativeCamera_WorldToCamera;
+static uint64_t gFreeFireNativeCameraProjectionOffset = kNativeCamera_Projection;
+static uint64_t gFreeFireNativeCameraWorldToClipOffset = kNativeCamera_WorldToClip;
+static bool gFreeFireNativeCameraOffsetsResolved = false;
+static NSTimeInterval gFreeFireNativeCameraLastDiscoveryAttempt = 0.0;
 
 static bool ReadCameraVPAndWorldMatrix(RemoteCall *remoteCall, uintptr_t camera,
                                       float *outVP, float *outView) {
@@ -113,36 +164,87 @@ static bool ReadCameraVPAndWorldMatrix(RemoteCall *remoteCall, uintptr_t camera,
     if (!validOffsetPtr(nativeCamera))
         return false;
 
-    float view[16] = {};
-    float projection[16] = {};
-    float viewProjection[16] = {};
+    // Try the offsets that worked before (or the dump defaults) first.
+    uint64_t candidateViewOffsets[4] = {
+        gFreeFireNativeCameraViewOffset, kNativeCamera_WorldToCamera, 0x70, 0x90
+    };
+    uint64_t candidateProjOffsets[4] = {
+        gFreeFireNativeCameraProjectionOffset, kNativeCamera_Projection, 0xB0,
+        0xD0
+    };
+    uint64_t candidateClipOffsets[4] = {
+        gFreeFireNativeCameraWorldToClipOffset, kNativeCamera_WorldToClip, 0xF0,
+        0x110
+    };
 
-    if (ReadValidMatrix(remoteCall, nativeCamera + kNativeCamera_WorldToCamera,
-                        view) &&
-        ReadValidMatrix(remoteCall, nativeCamera + kNativeCamera_Projection,
-                        projection)) {
+    auto tryViewProjection = [&](uint64_t viewOff, uint64_t projOff) -> bool {
+        float view[16] = {};
+        float projection[16] = {};
+        float viewProjection[16] = {};
+        if (!ReadValidMatrix(remoteCall, nativeCamera + viewOff, view))
+            return false;
+        if (!ReadValidMatrix(remoteCall, nativeCamera + projOff, projection))
+            return false;
         MultiplyMatrix4x4(projection, view, viewProjection);
-        if (LooksLikeViewProjection(viewProjection)) {
-            memcpy(outVP, viewProjection, sizeof(viewProjection));
-            if (outView) {
-                memcpy(outView, view, sizeof(view));
-            }
-            return true;
+        if (!LooksLikeViewProjection(viewProjection))
+            return false;
+        memcpy(outVP, viewProjection, sizeof(viewProjection));
+        if (outView) {
+            memcpy(outView, view, sizeof(view));
         }
-    }
+        gFreeFireNativeCameraViewOffset = viewOff;
+        gFreeFireNativeCameraProjectionOffset = projOff;
+        gFreeFireNativeCameraOffsetsResolved = true;
+        return true;
+    };
 
-    if (ReadValidMatrix(remoteCall, nativeCamera + kNativeCamera_WorldToClip,
-                        viewProjection) &&
-        LooksLikeViewProjection(viewProjection)) {
+    auto tryWorldToClip = [&](uint64_t clipOff) -> bool {
+        float viewProjection[16] = {};
+        if (!ReadValidMatrix(remoteCall, nativeCamera + clipOff, viewProjection))
+            return false;
+        if (!LooksLikeViewProjection(viewProjection))
+            return false;
         memcpy(outVP, viewProjection, sizeof(viewProjection));
         if (outView) {
             if (!ReadValidMatrix(remoteCall,
-                                 nativeCamera + kNativeCamera_WorldToCamera,
+                                 nativeCamera + gFreeFireNativeCameraViewOffset,
                                  outView)) {
                 memset(outView, 0, sizeof(float) * 16);
             }
         }
+        gFreeFireNativeCameraWorldToClipOffset = clipOff;
+        gFreeFireNativeCameraOffsetsResolved = true;
         return true;
+    };
+
+    for (int i = 0; i < 4; ++i) {
+        if (tryViewProjection(candidateViewOffsets[i],
+                             candidateProjOffsets[i]))
+            return true;
+    }
+    for (int i = 0; i < 4; ++i) {
+        if (tryWorldToClip(candidateClipOffsets[i]))
+            return true;
+    }
+
+    // Last resort: discover offsets by scanning the native camera. Throttle
+    // this so a bad frame doesn't trigger a full scan every 16 ms.
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (now - gFreeFireNativeCameraLastDiscoveryAttempt < 2.0)
+        return false;
+    gFreeFireNativeCameraLastDiscoveryAttempt = now;
+
+    for (uint64_t clipOff = 0x40; clipOff <= 0x180; clipOff += 0x10) {
+        if (tryWorldToClip(clipOff))
+            return true;
+    }
+    for (uint64_t viewOff = 0x40; viewOff <= 0x140; viewOff += 0x10) {
+        for (uint64_t projOff = 0x40; projOff <= 0x140; projOff += 0x10) {
+            if (viewOff == projOff)
+                continue;
+            if (tryViewProjection(viewOff, projOff))
+                return true;
+        }
     }
 
     return false;
@@ -595,13 +697,15 @@ static uintptr_t TryResolveGameFacadeFromKlass(RemoteCall *remoteCall,
         if (strcmp(className, "GameFacade") == 0) {
             // Found GameFacade! Read static_fields at 0xB8
             uintptr_t sf = ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_StaticFields);
-            if (validOffsetPtr(sf)) {
+            if (validOffsetPtr(sf) && FreeFireStaticBlockHasGameSlot(remoteCall, sf)) {
                 return sf;
             }
             // Fallback: scan klass fields for static_fields block
             for (uint64_t sfoff = 0x50; sfoff <= 0x200; sfoff += sizeof(uintptr_t)) {
                 uintptr_t block = ReadMemorySafe<uintptr_t>(remoteCall, klass + sfoff);
-                if (validOffsetPtr(block) && LooksLikeGameFacadeStaticBlock(remoteCall, block))
+                if (validOffsetPtr(block) &&
+                    LooksLikeGameFacadeStaticBlock(remoteCall, block) &&
+                    FreeFireStaticBlockHasGameSlot(remoteCall, block))
                     return block;
             }
         }
@@ -626,7 +730,9 @@ static uintptr_t FindStaticFieldsBlockInKlass(RemoteCall *remoteCall,
     for (uint64_t offset = 0x20; offset <= 0x280;
          offset += sizeof(uintptr_t)) {
         uintptr_t block = ReadMemorySafe<uintptr_t>(remoteCall, klass + offset);
-        if (validOffsetPtr(block) && LooksLikeGameFacadeStaticBlock(remoteCall, block))
+        if (validOffsetPtr(block) &&
+            LooksLikeGameFacadeStaticBlock(remoteCall, block) &&
+            FreeFireStaticBlockHasGameSlot(remoteCall, block))
             return block;
     }
     return 0;
@@ -706,7 +812,7 @@ static int CollectArm64StaticCandidates(RemoteCall *remoteCall,
     if (!remoteCall || !validOffsetPtr(funcAddr) || !out || maxOut <= 0)
         return 0;
 
-    uint32_t insns[64] = {0};
+    uint32_t insns[128] = {0};
     if (![remoteCall remoteRead:funcAddr to:insns size:sizeof(insns)])
         return 0;
 
@@ -714,7 +820,7 @@ static int CollectArm64StaticCandidates(RemoteCall *remoteCall,
     uintptr_t regValues[32] = {0};
     int found = 0;
 
-    for (int i = 0; i < 64 && found < maxOut; ++i) {
+    for (int i = 0; i < 128 && found < maxOut; ++i) {
         uint32_t insn = insns[i];
         uintptr_t pc = funcAddr + (uintptr_t)i * 4;
 
