@@ -93,47 +93,6 @@ static bool ReadValidMatrix(RemoteCall *remoteCall, uintptr_t address,
     return magnitude > 0.5f && magnitude < 1.0e8f;
 }
 
-static bool FreeFireStaticBlockHasGameSlot(RemoteCall *remoteCall, uintptr_t block) {
-    if (!remoteCall || !validOffsetPtr(block))
-        return false;
-
-    for (uint64_t slot = 0x0; slot <= 0x8; slot += 0x8) {
-        uintptr_t value = ReadMemorySafe<uintptr_t>(remoteCall, block + slot);
-        if (value == 0)
-            return true;
-        if (!validOffsetPtr(value))
-            continue;
-
-        char name[64] = {0};
-        if (ReadIl2CppClassName(remoteCall, value, name, sizeof(name)) &&
-            strstr(name, "Game") != NULL) {
-            return true;
-        }
-    }
-
-    uint64_t uid = ReadMemorySafe<uint64_t>(remoteCall, block + 0x58);
-    if (uid > 10000000ULL && uid < 10000000000000ULL) {
-        int stringMatches = 0;
-        for (uint64_t slot = 0x10; slot <= 0x40; slot += sizeof(uintptr_t)) {
-            uintptr_t strObj =
-                ReadMemorySafe<uintptr_t>(remoteCall, block + slot);
-            if (!validOffsetPtr(strObj))
-                continue;
-            int32_t strLen =
-                ReadMemorySafe<int32_t>(remoteCall, strObj + 0x10);
-            if (strLen > 0 && strLen < 128) {
-                uint16_t firstChar =
-                    ReadMemorySafe<uint16_t>(remoteCall, strObj + 0x14);
-                if (firstChar >= 0x20 && firstChar <= 0x7E)
-                    ++stringMatches;
-            }
-        }
-        if (stringMatches >= 2)
-            return true;
-    }
-
-    return false;
-}
 
 static bool LooksLikeViewProjection(const float *matrix) {
     return fabsf(matrix[11]) > 0.01f || fabsf(matrix[15]) < 0.95f;
@@ -473,6 +432,49 @@ static bool ReadIl2CppClassName(RemoteCall *remoteCall, uintptr_t object,
 
     return ReadKlassName(remoteCall, klass, out, capacity);
 }
+
+static bool FreeFireStaticBlockHasGameSlot(RemoteCall *remoteCall, uintptr_t block) {
+    if (!remoteCall || !validOffsetPtr(block))
+        return false;
+
+    for (uint64_t slot = 0x0; slot <= 0x8; slot += 0x8) {
+        uintptr_t value = ReadMemorySafe<uintptr_t>(remoteCall, block + slot);
+        if (value == 0)
+            return true;
+        if (!validOffsetPtr(value))
+            continue;
+
+        char name[64] = {0};
+        if (ReadIl2CppClassName(remoteCall, value, name, sizeof(name)) &&
+            strstr(name, "Game") != NULL) {
+            return true;
+        }
+    }
+
+    uint64_t uid = ReadMemorySafe<uint64_t>(remoteCall, block + 0x58);
+    if (uid > 10000000ULL && uid < 10000000000000ULL) {
+        int stringMatches = 0;
+        for (uint64_t slot = 0x10; slot <= 0x40; slot += sizeof(uintptr_t)) {
+            uintptr_t strObj =
+                ReadMemorySafe<uintptr_t>(remoteCall, block + slot);
+            if (!validOffsetPtr(strObj))
+                continue;
+            int32_t strLen =
+                ReadMemorySafe<int32_t>(remoteCall, strObj + 0x10);
+            if (strLen > 0 && strLen < 128) {
+                uint16_t firstChar =
+                    ReadMemorySafe<uint16_t>(remoteCall, strObj + 0x14);
+                if (firstChar >= 0x20 && firstChar <= 0x7E)
+                    ++stringMatches;
+            }
+        }
+        if (stringMatches >= 2)
+            return true;
+    }
+
+    return false;
+}
+
 
 static bool IsSubclassOf(RemoteCall *remoteCall, uintptr_t object,
                          const char *targetName) {
