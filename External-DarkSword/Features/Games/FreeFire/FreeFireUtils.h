@@ -518,9 +518,37 @@ static uint64_t gFreeFireCameraFieldOffset = 0;
 static uint64_t gFreeFireEntitiesFieldOffset = 0;
 
 static bool FieldHoldsMatchGame(RemoteCall *remoteCall, uintptr_t value) {
-    return IsSubclassOf(remoteCall, value, "MatchGame") ||
-           IsSubclassOf(remoteCall, value, "COWGameBase") ||
-           Il2CppClassNameContains(remoteCall, value, "MatchGame");
+    if (!remoteCall || !validOffsetPtr(value))
+        return false;
+    char name[64] = {0};
+    if (ReadIl2CppClassName(remoteCall, value, name, sizeof(name))) {
+        if (strstr(name, "FrontEnd") != NULL ||
+            strstr(name, "Lobby") != NULL ||
+            strstr(name, "Hotupdater") != NULL)
+            return false;
+        if (strstr(name, "MatchGame") != NULL)
+            return true;
+    }
+    if (IsSubclassOf(remoteCall, value, "MatchGame") ||
+        IsSubclassOf(remoteCall, value, "COWGameBase"))
+        return true;
+
+    // Structural validation fallback:
+    // Match games own CameraControllerManager at 0xD8 or replication dictionary at 0xC0
+    uintptr_t camMgr =
+        ReadMemorySafe<uintptr_t>(remoteCall, value + kMatchGame_CameraControllerManager);
+    if (validOffsetPtr(camMgr)) {
+        char camName[64] = {0};
+        if (ReadIl2CppClassName(remoteCall, camMgr, camName, sizeof(camName)) &&
+            strstr(camName, "Camera") != NULL)
+            return true;
+    }
+    uintptr_t repDict =
+        ReadMemorySafe<uintptr_t>(remoteCall, value + kMatchGame_ReplicationEntities);
+    if (validOffsetPtr(repDict) && IsDictionaryObject(remoteCall, repDict))
+        return true;
+
+    return false;
 }
 
 static bool FieldHoldsCamera(RemoteCall *remoteCall, uintptr_t value) {
@@ -553,17 +581,15 @@ static bool IsDictionaryObject(RemoteCall *remoteCall, uintptr_t object) {
     return Il2CppClassNameContains(remoteCall, object, "Dictionary");
 }
 
-// Replication dictionaries are the ones whose values are Player objects.
+// Replication dictionaries are the ones whose values are Entity / Player / Target objects.
 static bool LooksLikePlayerDictionary(RemoteCall *remoteCall, uintptr_t dict) {
     if (!IsDictionaryObject(remoteCall, dict))
         return false;
 
     int32_t count =
         ReadMemorySafe<int32_t>(remoteCall, dict + kDictionary_Count);
-    if (count < 0 || count > 10000)
+    if (count <= 0 || count > 10000)
         return false;
-    if (count == 0)
-        return true;
 
     uintptr_t entries =
         ReadMemorySafe<uintptr_t>(remoteCall, dict + kDictionary_Entries);
@@ -588,7 +614,12 @@ static bool LooksLikePlayerDictionary(RemoteCall *remoteCall, uintptr_t dict) {
             ReadMemorySafe<uintptr_t>(remoteCall, entryAddr + kEntry_Value);
         if (validOffsetPtr(value) &&
             (IsSubclassOf(remoteCall, value, "Player") ||
-             Il2CppClassNameContains(remoteCall, value, "Player")))
+             IsSubclassOf(remoteCall, value, "Entity") ||
+             IsSubclassOf(remoteCall, value, "AttackableEntity") ||
+             Il2CppClassNameContains(remoteCall, value, "Player") ||
+             Il2CppClassNameContains(remoteCall, value, "Entity") ||
+             Il2CppClassNameContains(remoteCall, value, "Target") ||
+             Il2CppClassNameContains(remoteCall, value, "Dummy")))
             return true;
     }
 

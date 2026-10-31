@@ -724,89 +724,88 @@ NS_ASSUME_NONNULL_BEGIN
         return;
     }
 
-    // 2. Read CurrentMatchGame
-    // In match, CurrentMatchGame sits at the static field discovered above.
-    // In lobby, CurrentMatchGame is NULL (0x0). Do NOT fall back to CurrentGame
-    // (which is LobbyGame).
-    uint64_t matchGameOffset = gFreeFireMatchGameFieldOffset != 0
-                                   ? gFreeFireMatchGameFieldOffset
-                                   : kGameFacadeStatic_CurrentMatchGame;
-    uintptr_t currentMatchGame = ReadMemorySafe<uintptr_t>(
-        remoteCall, staticFields + matchGameOffset);
+    // 2. Read MatchGame Context
+    // In match (BR / CS), CurrentMatchGame sits at static field 0x8.
+    // In Training Mode or custom rooms, the game instance sits at CurrentGame (0x0).
+    uint64_t matchGameOffset = 0;
+    uintptr_t currentMatchGame = 0;
 
-    char matchGameClass[64] = {0};
-    BOOL hasMatchGameClass =
-        ReadIl2CppClassName(remoteCall, currentMatchGame, matchGameClass,
-                            sizeof(matchGameClass));
-    BOOL isMatchGame = hasMatchGameClass &&
-        (strstr(matchGameClass, "MatchGame") != NULL ||
-         IsSubclassOf(remoteCall, currentMatchGame, "MatchGame") ||
-         IsSubclassOf(remoteCall, currentMatchGame, "COWGameBase"));
+    // Check CurrentMatchGame (offset 0x8)
+    uintptr_t mg = ReadMemorySafe<uintptr_t>(
+        remoteCall, staticFields + kGameFacadeStatic_CurrentMatchGame);
+    if (FieldHoldsMatchGame(remoteCall, mg)) {
+        currentMatchGame = mg;
+        matchGameOffset = kGameFacadeStatic_CurrentMatchGame;
+    }
 
-    if (validOffsetPtr(currentMatchGame) && hasMatchGameClass && !isMatchGame) {
-        // The dump offset points at another object in this build; repair it with
-        // the field that verifiably holds a MatchGame reference.
-        uint64_t discovered = 0;
-        if ([self discoveryDue]) {
-            discovered = FindIl2CppFieldMatchingFrom(
-                remoteCall, staticFields, 0x0, 0x300, FieldHoldsMatchGame);
+    // Check CurrentGame (offset 0x0)
+    if (!validOffsetPtr(currentMatchGame)) {
+        uintptr_t cg = ReadMemorySafe<uintptr_t>(
+            remoteCall, staticFields + kGameFacadeStatic_CurrentGame);
+        if (FieldHoldsMatchGame(remoteCall, cg)) {
+            currentMatchGame = cg;
+            matchGameOffset = kGameFacadeStatic_CurrentGame;
         }
+    }
 
+    // Check previously discovered offset
+    if (!validOffsetPtr(currentMatchGame) &&
+        gFreeFireMatchGameFieldOffset != 0 &&
+        gFreeFireMatchGameFieldOffset != kGameFacadeStatic_CurrentMatchGame &&
+        gFreeFireMatchGameFieldOffset != kGameFacadeStatic_CurrentGame) {
+        uintptr_t discVal = ReadMemorySafe<uintptr_t>(
+            remoteCall, staticFields + gFreeFireMatchGameFieldOffset);
+        if (FieldHoldsMatchGame(remoteCall, discVal)) {
+            currentMatchGame = discVal;
+            matchGameOffset = gFreeFireMatchGameFieldOffset;
+        }
+    }
+
+    // Dynamic scan across staticFields if still not found
+    if (!validOffsetPtr(currentMatchGame) && [self discoveryDue]) {
+        uint64_t discovered = FindIl2CppFieldMatchingFrom(
+            remoteCall, staticFields, 0x0, 0x300, FieldHoldsMatchGame);
         if (discovered != 0) {
             matchGameOffset = discovered;
             gFreeFireMatchGameFieldOffset = discovered;
             currentMatchGame = ReadMemorySafe<uintptr_t>(
                 remoteCall, staticFields + discovered);
-            hasMatchGameClass =
-                ReadIl2CppClassName(remoteCall, currentMatchGame, matchGameClass,
-                                    sizeof(matchGameClass));
-            isMatchGame = hasMatchGameClass &&
-                (strstr(matchGameClass, "MatchGame") != NULL ||
-                 IsSubclassOf(remoteCall, currentMatchGame, "MatchGame") ||
-                 IsSubclassOf(remoteCall, currentMatchGame, "COWGameBase"));
-            [self reportDiagnostics:
-                      [NSString stringWithFormat:
-                                    @"MatchGame field repaired to 0x%llx (class='%s')",
-                                    (unsigned long long)discovered, matchGameClass]];
         }
     }
 
-    if (!validOffsetPtr(currentMatchGame) || !isMatchGame) {
-        // Training and some in-game modes leave CurrentMatchGame unset but
-        // still expose a game instance through CurrentGame that owns the
-        // replication entities. Use it only when it verifiably has a player
-        // dictionary, so the lobby FrontEndGame is never mistaken for a match.
+    // Fallback: If CurrentGame holds a replication dictionary even if class name is unrecognized
+    if (!validOffsetPtr(currentMatchGame)) {
         uintptr_t currentGame = ReadMemorySafe<uintptr_t>(
             remoteCall, staticFields + kGameFacadeStatic_CurrentGame);
         if (validOffsetPtr(currentGame)) {
-            uint64_t entityField = FindIl2CppFieldMatching(
-                remoteCall, currentGame, 0x300, LooksLikePlayerDictionary);
-            if (entityField != 0) {
-                currentMatchGame = currentGame;
-                matchGameOffset = kGameFacadeStatic_CurrentGame;
-                hasMatchGameClass = ReadIl2CppClassName(
-                    remoteCall, currentMatchGame, matchGameClass,
-                    sizeof(matchGameClass));
-                isMatchGame = YES;
-                [self reportDiagnostics:
-                          [NSString stringWithFormat:
-                                        @"Using CurrentGame as match context "
-                                        @"(field 0x%llx holds a player "
-                                        @"dictionary)",
-                                        (unsigned long long)entityField]];
+            char cgName[64] = {0};
+            ReadIl2CppClassName(remoteCall, currentGame, cgName, sizeof(cgName));
+            if (strstr(cgName, "FrontEnd") == NULL && strstr(cgName, "Lobby") == NULL) {
+                uintptr_t repDict = ReadMemorySafe<uintptr_t>(
+                    remoteCall, currentGame + kMatchGame_ReplicationEntities);
+                if (validOffsetPtr(repDict) && IsDictionaryObject(remoteCall, repDict)) {
+                    currentMatchGame = currentGame;
+                    matchGameOffset = kGameFacadeStatic_CurrentGame;
+                } else {
+                    uint64_t entityField = FindIl2CppFieldMatching(
+                        remoteCall, currentGame, 0x300, LooksLikePlayerDictionary);
+                    if (entityField != 0) {
+                        currentMatchGame = currentGame;
+                        matchGameOffset = kGameFacadeStatic_CurrentGame;
+                    }
+                }
             }
         }
     }
 
-    if (!validOffsetPtr(currentMatchGame) || !isMatchGame) {
-        if (!validOffsetPtr(currentMatchGame)) {
-            [self reportStage:@"stage 2/6: no CurrentMatchGame (lobby)"];
-        } else {
-            [self reportStage:
-                      [NSString stringWithFormat:@"stage 2/6: field 0x%llx holds '%s', not MatchGame (in lobby/waiting)",
-                                                 (unsigned long long)matchGameOffset,
-                                                 matchGameClass]];
-        }
+    char matchGameClass[64] = {0};
+    if (validOffsetPtr(currentMatchGame)) {
+        ReadIl2CppClassName(remoteCall, currentMatchGame, matchGameClass,
+                            sizeof(matchGameClass));
+    }
+
+    if (!validOffsetPtr(currentMatchGame)) {
+        [self reportStage:@"stage 2/6: no CurrentMatchGame (lobby)"];
         @synchronized(self) {
             self.hasValidFrame = NO;
             [self clearOverlayTargets];
@@ -989,8 +988,14 @@ NS_ASSUME_NONNULL_BEGIN
             sampleClasses += className;
         }
 
-        if (strncmp(className, "Player", 6) != 0 &&
-            !IsSubclassOf(remoteCall, entity, "Player")) {
+        BOOL isTargetOrPlayer = (strncmp(className, "Player", 6) == 0 ||
+                                 strstr(className, "Player") != NULL ||
+                                 strstr(className, "Target") != NULL ||
+                                 strstr(className, "Dummy") != NULL ||
+                                 strstr(className, "AIPawn") != NULL ||
+                                 IsSubclassOf(remoteCall, entity, "Player") ||
+                                 IsSubclassOf(remoteCall, entity, "AttackableEntity"));
+        if (!isTargetOrPlayer) {
             ++nonPlayerCount;
             continue;
         }
@@ -1023,7 +1028,7 @@ NS_ASSUME_NONNULL_BEGIN
             remoteCall, entity + kPlayer_OriginalNickName);
         NSString *playerName = ReadIl2CppString(remoteCall, nameStr);
         if (playerName.length == 0) {
-            playerName = @"Player";
+            playerName = [NSString stringWithUTF8String:className];
         }
 
         // Distance from camera to player

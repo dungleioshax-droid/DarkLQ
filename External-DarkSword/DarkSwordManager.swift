@@ -536,6 +536,9 @@ final class DarkSwordManager: ObservableObject {
         if isOpeningFreeFire {
             return "Opening"
         }
+        if isConnectedToFreeFire {
+            return "Connected"
+        }
         return nil
     }
 
