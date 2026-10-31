@@ -695,6 +695,66 @@ NS_ASSUME_NONNULL_BEGIN
         }
     }
 
+    // Secondary path: If CameraControllerManager did not yield a valid camera,
+    // check UIScene (Training Mode / Social Area / FrontEndGame)
+    if (!validOffsetPtr(camera)) {
+        uintptr_t uiScene = ReadMemorySafe<uintptr_t>(
+            remoteCall, currentMatchGame + kBaseGame_UIScene);
+        if (validOffsetPtr(uiScene)) {
+            // Check UI3DCamera at 0x170
+            uintptr_t candCam = ReadMemorySafe<uintptr_t>(
+                remoteCall, uiScene + kUIFrontEndScene_UI3DCamera);
+            if (validOffsetPtr(candCam) && FieldHoldsCamera(remoteCall, candCam)) {
+                float testVP[16] = {}, testView[16] = {};
+                if (ReadCameraVPAndWorldMatrix(remoteCall, candCam, testVP, testView)) {
+                    camera = candCam;
+                }
+            }
+            // Check Gyro Camera at 0x190
+            if (!validOffsetPtr(camera)) {
+                uintptr_t gyro = ReadMemorySafe<uintptr_t>(
+                    remoteCall, uiScene + kUIFrontEndScene_LobbyCamGyro);
+                if (validOffsetPtr(gyro)) {
+                    uintptr_t gyroCam = ReadMemorySafe<uintptr_t>(
+                        remoteCall, gyro + kGyroCameraController_Cam1);
+                    if (validOffsetPtr(gyroCam) && FieldHoldsCamera(remoteCall, gyroCam)) {
+                        float testVP[16] = {}, testView[16] = {};
+                        if (ReadCameraVPAndWorldMatrix(remoteCall, gyroCam, testVP, testView)) {
+                            camera = gyroCam;
+                        }
+                    }
+                }
+            }
+            // Scan uiScene fields (0x120 to 0x220) for any Camera with a valid VP matrix
+            if (!validOffsetPtr(camera)) {
+                for (uint64_t off = 0x120; off <= 0x220; off += sizeof(uintptr_t)) {
+                    uintptr_t ptr = ReadMemorySafe<uintptr_t>(remoteCall, uiScene + off);
+                    if (validOffsetPtr(ptr) && FieldHoldsCamera(remoteCall, ptr)) {
+                        float testVP[16] = {}, testView[16] = {};
+                        if (ReadCameraVPAndWorldMatrix(remoteCall, ptr, testVP, testView)) {
+                            camera = ptr;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Tertiary path: Scan currentMatchGame fields for any Camera with a valid VP matrix
+    if (!validOffsetPtr(camera)) {
+        for (uint64_t off = 0x10; off <= 0x200; off += sizeof(uintptr_t)) {
+            uintptr_t ptr = ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + off);
+            if (validOffsetPtr(ptr) && FieldHoldsCamera(remoteCall, ptr)) {
+                float testVP[16] = {}, testView[16] = {};
+                if (ReadCameraVPAndWorldMatrix(remoteCall, ptr, testVP, testView)) {
+                    camera = ptr;
+                    break;
+                }
+            }
+        }
+    }
+
     if (!validOffsetPtr(camera))
         return NO;
 
@@ -730,22 +790,27 @@ NS_ASSUME_NONNULL_BEGIN
     uint64_t matchGameOffset = 0;
     uintptr_t currentMatchGame = 0;
 
-    // Check CurrentMatchGame (offset 0x8)
     uintptr_t mg = ReadMemorySafe<uintptr_t>(
         remoteCall, staticFields + kGameFacadeStatic_CurrentMatchGame);
+    uintptr_t cg = ReadMemorySafe<uintptr_t>(
+        remoteCall, staticFields + kGameFacadeStatic_CurrentGame);
+
+    char mgName[48] = {0}, cgName[48] = {0};
+    if (validOffsetPtr(mg))
+        ReadIl2CppClassName(remoteCall, mg, mgName, sizeof(mgName));
+    if (validOffsetPtr(cg))
+        ReadIl2CppClassName(remoteCall, cg, cgName, sizeof(cgName));
+
     if (FieldHoldsMatchGame(remoteCall, mg)) {
         currentMatchGame = mg;
         matchGameOffset = kGameFacadeStatic_CurrentMatchGame;
-    }
-
-    // Check CurrentGame (offset 0x0)
-    if (!validOffsetPtr(currentMatchGame)) {
-        uintptr_t cg = ReadMemorySafe<uintptr_t>(
-            remoteCall, staticFields + kGameFacadeStatic_CurrentGame);
-        if (FieldHoldsMatchGame(remoteCall, cg)) {
-            currentMatchGame = cg;
-            matchGameOffset = kGameFacadeStatic_CurrentGame;
-        }
+    } else if (FieldHoldsMatchGame(remoteCall, cg)) {
+        currentMatchGame = cg;
+        matchGameOffset = kGameFacadeStatic_CurrentGame;
+    } else if (validOffsetPtr(cg) && FieldHoldsAnyGame(remoteCall, cg)) {
+        // Training Mode / Social Area / Custom Mode
+        currentMatchGame = cg;
+        matchGameOffset = kGameFacadeStatic_CurrentGame;
     }
 
     // Check previously discovered offset
@@ -755,7 +820,7 @@ NS_ASSUME_NONNULL_BEGIN
         gFreeFireMatchGameFieldOffset != kGameFacadeStatic_CurrentGame) {
         uintptr_t discVal = ReadMemorySafe<uintptr_t>(
             remoteCall, staticFields + gFreeFireMatchGameFieldOffset);
-        if (FieldHoldsMatchGame(remoteCall, discVal)) {
+        if (FieldHoldsMatchGame(remoteCall, discVal) || FieldHoldsAnyGame(remoteCall, discVal)) {
             currentMatchGame = discVal;
             matchGameOffset = gFreeFireMatchGameFieldOffset;
         }
@@ -765,6 +830,10 @@ NS_ASSUME_NONNULL_BEGIN
     if (!validOffsetPtr(currentMatchGame) && [self discoveryDue]) {
         uint64_t discovered = FindIl2CppFieldMatchingFrom(
             remoteCall, staticFields, 0x0, 0x300, FieldHoldsMatchGame);
+        if (discovered == 0) {
+            discovered = FindIl2CppFieldMatchingFrom(
+                remoteCall, staticFields, 0x0, 0x300, FieldHoldsAnyGame);
+        }
         if (discovered != 0) {
             matchGameOffset = discovered;
             gFreeFireMatchGameFieldOffset = discovered;
@@ -773,26 +842,21 @@ NS_ASSUME_NONNULL_BEGIN
         }
     }
 
-    // Fallback: If CurrentGame holds a replication dictionary even if class name is unrecognized
+    // Fallback: If CurrentGame holds an entity dictionary even if class name is unrecognized
     if (!validOffsetPtr(currentMatchGame)) {
         uintptr_t currentGame = ReadMemorySafe<uintptr_t>(
             remoteCall, staticFields + kGameFacadeStatic_CurrentGame);
         if (validOffsetPtr(currentGame)) {
-            char cgName[64] = {0};
-            ReadIl2CppClassName(remoteCall, currentGame, cgName, sizeof(cgName));
-            if (strstr(cgName, "FrontEnd") == NULL && strstr(cgName, "Lobby") == NULL) {
-                uintptr_t repDict = ReadMemorySafe<uintptr_t>(
-                    remoteCall, currentGame + kMatchGame_ReplicationEntities);
-                if (validOffsetPtr(repDict) && IsDictionaryObject(remoteCall, repDict)) {
+            uintptr_t repDict = ReadMemorySafe<uintptr_t>(
+                remoteCall, currentGame + kMatchGame_ReplicationEntities);
+            if (validOffsetPtr(repDict) && IsDictionaryObject(remoteCall, repDict)) {
+                currentMatchGame = currentGame;
+                matchGameOffset = kGameFacadeStatic_CurrentGame;
+            } else {
+                uintptr_t baseStatics = ResolveBaseGameStaticFields(remoteCall, currentGame);
+                if (validOffsetPtr(baseStatics)) {
                     currentMatchGame = currentGame;
                     matchGameOffset = kGameFacadeStatic_CurrentGame;
-                } else {
-                    uint64_t entityField = FindIl2CppFieldMatching(
-                        remoteCall, currentGame, 0x300, LooksLikePlayerDictionary);
-                    if (entityField != 0) {
-                        currentMatchGame = currentGame;
-                        matchGameOffset = kGameFacadeStatic_CurrentGame;
-                    }
                 }
             }
         }
@@ -805,8 +869,9 @@ NS_ASSUME_NONNULL_BEGIN
     }
 
     if (!validOffsetPtr(currentMatchGame)) {
-        [self reportStage:[NSString stringWithFormat:@"stage 2/6: no CurrentMatchGame (lobby, field=0x%llx)",
-                                                     (unsigned long long)matchGameOffset]];
+        [self reportStage:[NSString stringWithFormat:@"stage 2/6: no game (cg=0x%lx'%s', mg=0x%lx'%s')",
+                                                     (unsigned long)cg, cgName,
+                                                     (unsigned long)mg, mgName]];
         @synchronized(self) {
             self.hasValidFrame = NO;
             [self clearOverlayTargets];
@@ -851,12 +916,22 @@ NS_ASSUME_NONNULL_BEGIN
         remoteCall, staticFields + kGameFacadeStatic_LocalPlayerUserID);
     uint32_t hostTeamID = 0;
 
-    // 4. Read Entities from MatchGame.m_ReplicationEntitis
+    // 4. Read Entities from MatchGame.m_ReplicationEntitis or BaseGame.sAllEntities
     uint64_t entitiesOffset = gFreeFireEntitiesFieldOffset != 0
                                   ? gFreeFireEntitiesFieldOffset
                                   : kMatchGame_ReplicationEntities;
     uintptr_t repDict = ReadMemorySafe<uintptr_t>(
         remoteCall, currentMatchGame + entitiesOffset);
+
+    if (!IsDictionaryObject(remoteCall, repDict)) {
+        // Fallback to BaseGame.sAllEntities (used in Training Mode / Social Area)
+        uintptr_t allEntities = ResolveBaseGameAllEntities(remoteCall, currentMatchGame);
+        if (validOffsetPtr(allEntities)) {
+            repDict = allEntities;
+            entitiesOffset = kBaseGameStatic_sAllEntities;
+        }
+    }
+
     if (!IsDictionaryObject(remoteCall, repDict) && [self discoveryDue]) {
         uint64_t discovered = FindIl2CppFieldMatching(
             remoteCall, currentMatchGame, 0x300, LooksLikePlayerDictionary);
@@ -869,10 +944,8 @@ NS_ASSUME_NONNULL_BEGIN
     }
     if (!validOffsetPtr(repDict)) {
         [self reportStage:
-                  [NSString stringWithFormat:@"stage 5/6: replication "
-                                             @"dictionary missing (field "
-                                             @"0x%llx)",
-                                             (unsigned long long)entitiesOffset]];
+                  [NSString stringWithFormat:@"stage 5/6: entity dictionary missing (game='%s')",
+                                             matchGameClass]];
         @synchronized(self) {
             self.hasValidFrame = NO;
         }
@@ -883,8 +956,7 @@ NS_ASSUME_NONNULL_BEGIN
         ReadMemorySafe<int32_t>(remoteCall, repDict + kDictionary_Count);
     if (dictCount <= 0 || dictCount > 10000) {
         [self reportStage:
-                  [NSString stringWithFormat:@"stage 5/6: dictionary count "
-                                             @"%d out of range",
+                  [NSString stringWithFormat:@"stage 5/6: entities=%d (waiting for targets/match)",
                                              (int)dictCount]];
         @synchronized(self) {
             self.hasValidFrame = NO;

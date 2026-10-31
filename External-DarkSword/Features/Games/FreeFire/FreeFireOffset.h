@@ -51,6 +51,14 @@ inline constexpr uint64_t kGameFacadeStatic_CurrentGame = 0x00;
 inline constexpr uint64_t kGameFacadeStatic_CurrentMatchGame = 0x08;
 inline constexpr uint64_t kGameFacadeStatic_LocalPlayerUserID = 0x58;
 
+// BaseGame & UIFrontEndScene Fields (Training Ground / Social Area)
+inline constexpr uint64_t kBaseGame_UIScene = 0x10;
+inline constexpr uint64_t kBaseGameStatic_sAllEntities = 0x08;
+inline constexpr uint64_t kUIFrontEndScene_UI3DCamera = 0x170;
+inline constexpr uint64_t kUIFrontEndScene_BgCamera = 0x178;
+inline constexpr uint64_t kUIFrontEndScene_LobbyCamGyro = 0x190;
+inline constexpr uint64_t kGyroCameraController_Cam1 = 0x20;
+
 // MatchGame Fields
 inline constexpr uint64_t kMatchGame_ReplicationEntities = 0xC0;
 inline constexpr uint64_t kMatchGame_CameraControllerManager = 0xD8;

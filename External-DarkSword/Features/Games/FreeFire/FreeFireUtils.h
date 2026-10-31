@@ -555,6 +555,56 @@ static bool FieldHoldsMatchGame(RemoteCall *remoteCall, uintptr_t value) {
     return false;
 }
 
+static bool FieldHoldsAnyGame(RemoteCall *remoteCall, uintptr_t value) {
+    if (!remoteCall || !validOffsetPtr(value))
+        return false;
+    char name[64] = {0};
+    if (ReadIl2CppClassName(remoteCall, value, name, sizeof(name))) {
+        if (strstr(name, "Hotupdater") != NULL)
+            return false;
+        if (strstr(name, "Game") != NULL)
+            return true;
+    }
+    return IsSubclassOf(remoteCall, value, "COWGameBase") ||
+           IsSubclassOf(remoteCall, value, "BaseGame");
+}
+
+static uintptr_t ResolveBaseGameStaticFields(RemoteCall *remoteCall, uintptr_t gameObject) {
+    if (!remoteCall || !validOffsetPtr(gameObject))
+        return 0;
+
+    uintptr_t klass = ReadMemorySafe<uintptr_t>(remoteCall, gameObject + 0x0);
+    for (int depth = 0; depth < 8 && validOffsetPtr(klass); ++depth) {
+        char name[64] = {0};
+        if (ReadKlassName(remoteCall, klass, name, sizeof(name))) {
+            if (strcmp(name, "BaseGame") == 0) {
+                return ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_StaticFields);
+            }
+        }
+        klass = ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Parent);
+    }
+    return 0;
+}
+
+static uintptr_t ResolveBaseGameAllEntities(RemoteCall *remoteCall, uintptr_t gameObject) {
+    uintptr_t staticFields = ResolveBaseGameStaticFields(remoteCall, gameObject);
+    if (!validOffsetPtr(staticFields))
+        return 0;
+
+    // Check sAllEntities at offset 0x08
+    uintptr_t allEntities = ReadMemorySafe<uintptr_t>(remoteCall, staticFields + kBaseGameStatic_sAllEntities);
+    if (validOffsetPtr(allEntities) && IsDictionaryObject(remoteCall, allEntities))
+        return allEntities;
+
+    // Fallback: check 0x00 and 0x10
+    for (uint64_t off = 0x0; off <= 0x18; off += sizeof(uintptr_t)) {
+        uintptr_t dict = ReadMemorySafe<uintptr_t>(remoteCall, staticFields + off);
+        if (validOffsetPtr(dict) && IsDictionaryObject(remoteCall, dict))
+            return dict;
+    }
+    return 0;
+}
+
 static bool FieldHoldsCamera(RemoteCall *remoteCall, uintptr_t value) {
     return Il2CppClassNameContains(remoteCall, value, "Camera");
 }
