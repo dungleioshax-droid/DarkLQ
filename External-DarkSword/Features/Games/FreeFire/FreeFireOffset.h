@@ -54,6 +54,8 @@ inline constexpr uint64_t kGameFacadeStatic_LocalPlayerUserID = 0x58;
 // BaseGame & UIFrontEndScene Fields (Training Ground / Social Area)
 inline constexpr uint64_t kMethodInfo_BaseGame_CCtor = 0x1FB5D028;
 inline constexpr uint64_t kBaseGame_UIScene = 0x10;
+inline constexpr uint64_t kBaseGame_GameContext = 0x30;
+inline constexpr uint64_t kBaseGameContext_MatchGame = 0x30;
 inline constexpr uint64_t kBaseGameStatic_sTickedEntities = 0x00;
 inline constexpr uint64_t kBaseGameStatic_sAllEntities = 0x08;
 inline constexpr uint64_t kBaseGameStatic_sAllLEntities = 0x10;
@@ -96,6 +98,7 @@ inline constexpr uint64_t kMatch_Containers = 0x2A0; // Dictionary<uint, LevelCo
 inline constexpr uint64_t kTraining_HumanTargetList = 0x478; // List<Player_TrainingHumanTarget_Stand>
 inline constexpr uint64_t kTraining_HumanTargetQueue1 = 0x468; // Queue<Player_TrainingHumanTarget>
 inline constexpr uint64_t kTraining_HumanTargetQueue2 = 0x470; // Queue<Player_TrainingHumanTarget>
+inline constexpr uint64_t kTraining_MovableShootingTargetList = 0x4B8; // List<MovableShootingTarget>
 inline constexpr uint64_t kTraining_AltHumanTargetList = 0x288;
 
 // CameraControllerManager Fields

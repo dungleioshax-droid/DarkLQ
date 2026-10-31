@@ -71,7 +71,8 @@ NS_ASSUME_NONNULL_BEGIN
                camera:(uintptr_t *)outCamera
                camMgr:(uintptr_t *)outCamMgr;
 - (FreeFireEntityContainer)resolveEntityContainer:(RemoteCall *)remoteCall
-                                        matchGame:(uintptr_t)currentMatchGame;
+                                        matchGame:(uintptr_t)currentMatchGame
+                                     ctxMatchGame:(uintptr_t)ctxMatchGame;
 - (BOOL)discoveryDue;
 - (BOOL)diagnosticsDue;
 - (void)reportDiagnostics:(NSString *)message;
@@ -884,16 +885,29 @@ NS_ASSUME_NONNULL_BEGIN
 }
 
 - (FreeFireEntityContainer)resolveEntityContainer:(RemoteCall *)remoteCall
-                                        matchGame:(uintptr_t)currentMatchGame {
+                                        matchGame:(uintptr_t)currentMatchGame
+                                     ctxMatchGame:(uintptr_t)ctxMatchGame {
     FreeFireEntityContainer emptyContainer;
-    if (!remoteCall || !validOffsetPtr(currentMatchGame))
+    if (!remoteCall || (!validOffsetPtr(currentMatchGame) && !validOffsetPtr(ctxMatchGame)))
         return emptyContainer;
+
+    if (!validOffsetPtr(ctxMatchGame) && validOffsetPtr(currentMatchGame)) {
+        uintptr_t gameCtx = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kBaseGame_GameContext));
+        if (validOffsetPtr(gameCtx)) {
+            ctxMatchGame = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, gameCtx + kBaseGameContext_MatchGame));
+            if (!validOffsetPtr(ctxMatchGame)) {
+                uintptr_t cand20 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, gameCtx + 0x20));
+                if (validOffsetPtr(cand20)) ctxMatchGame = cand20;
+            }
+        }
+    }
 
     FreeFireEntityContainer bestContainer;
     int bestScore = 0;
     FreeFireEntityContainer firstValidContainer;
 
     auto consider = [&](uintptr_t cand) {
+        cand = CleanPointer(cand);
         if (!validOffsetPtr(cand)) return;
         FreeFireEntityContainer info;
         if (!InspectEntityContainer(remoteCall, cand, &info))
@@ -916,7 +930,8 @@ NS_ASSUME_NONNULL_BEGIN
                 Il2CppClassNameContains(remoteCall, entity, "Target") ||
                 Il2CppClassNameContains(remoteCall, entity, "Human") ||
                 Il2CppClassNameContains(remoteCall, entity, "Dummy") ||
-                Il2CppClassNameContains(remoteCall, entity, "AIPawn")) {
+                Il2CppClassNameContains(remoteCall, entity, "AIPawn") ||
+                Il2CppClassNameContains(remoteCall, entity, "Stand")) {
                 confirmedEntities++;
             } else {
                 Vector3 testPos = Vector3::zero();
@@ -933,7 +948,39 @@ NS_ASSUME_NONNULL_BEGIN
         }
     };
 
-    // 1. BaseGame static fields via MethodInfo (0x1FB5D028)
+    // 1. Check ctxMatchGame (Training Ground MatchGame MNDPBJMLABJ / MatchGame)
+    if (validOffsetPtr(ctxMatchGame)) {
+        // Training Mode targets
+        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + kTraining_HumanTargetList))); // 0x478
+        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + kTraining_HumanTargetQueue1))); // 0x468
+        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + kTraining_HumanTargetQueue2))); // 0x470
+        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + kTraining_MovableShootingTargetList))); // 0x4B8
+        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + kTraining_AltHumanTargetList))); // 0x288
+        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + 0x448)));
+        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + 0x450)));
+        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + 0x490)));
+        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + 0x4C8)));
+        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + 0x4D0)));
+        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + 0x4F0)));
+
+        // MatchGame replication entities
+        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + kMatchGame_ReplicationEntities)));
+        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + kMatchGame_LReplicationEntities)));
+
+        // m_Match on ctxMatchGame
+        uintptr_t ctxMatchObj = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + kMatchGame_Match));
+        if (validOffsetPtr(ctxMatchObj)) {
+            const uint64_t matchOffsets[] = {
+                kMatch_Players1, kMatch_Players2, kMatch_Players3, kMatch_Players4, kMatch_Players5,
+                kMatch_PlayerList1, kMatch_PlayerList2, kMatch_AIPawns, kMatch_Teams, kMatch_Vehicles, kMatch_Containers
+            };
+            for (uint64_t off : matchOffsets) {
+                consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchObj + off)));
+            }
+        }
+    }
+
+    // 2. BaseGame static fields via MethodInfo (0x1FB5D028)
     uintptr_t bgMethod = self.binaryBase + kMethodInfo_BaseGame_CCtor;
     uintptr_t bgKlass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgMethod + kMethodInfo_Klass));
     if (validOffsetPtr(bgKlass)) {
@@ -945,48 +992,59 @@ NS_ASSUME_NONNULL_BEGIN
         }
     }
 
-    // 2. BaseGame static fields via parent-walk
-    uintptr_t walkStatics = ResolveBaseGameStaticFields(remoteCall, currentMatchGame);
-    if (validOffsetPtr(walkStatics)) {
-        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sAllEntities)));
-        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sTickedEntities)));
-        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sAllLEntities)));
+    // 3. BaseGame static fields via parent-walk
+    if (validOffsetPtr(currentMatchGame)) {
+        uintptr_t walkStatics = ResolveBaseGameStaticFields(remoteCall, currentMatchGame);
+        if (validOffsetPtr(walkStatics)) {
+            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sAllEntities)));
+            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sTickedEntities)));
+            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sAllLEntities)));
+        }
     }
-
-    // 3. MatchGame fields: m_ReplicationEntitis (0xC0), m_LReplicationEntitis (0xC8)
-    consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kMatchGame_ReplicationEntities)));
-    consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kMatchGame_LReplicationEntities)));
-
-    // 4. MatchGame.m_Match (0x90) player dictionaries & lists
-    uintptr_t matchObj = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kMatchGame_Match));
-    if (validOffsetPtr(matchObj)) {
-        const uint64_t matchOffsets[] = {
-            kMatch_Players1, kMatch_Players2, kMatch_Players3, kMatch_Players4, kMatch_Players5,
-            kMatch_PlayerList1, kMatch_PlayerList2, kMatch_AIPawns, kMatch_Teams, kMatch_Vehicles, kMatch_Containers
-        };
-        for (uint64_t off : matchOffsets) {
-            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, matchObj + off)));
+    if (validOffsetPtr(ctxMatchGame)) {
+        uintptr_t walkStatics = ResolveBaseGameStaticFields(remoteCall, ctxMatchGame);
+        if (validOffsetPtr(walkStatics)) {
+            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sAllEntities)));
+            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sTickedEntities)));
+            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sAllLEntities)));
         }
     }
 
-    // 5. Training Mode specific fields on currentMatchGame
-    const uint64_t trainingOffsets[] = {
-        kTraining_HumanTargetList, kTraining_HumanTargetQueue1, kTraining_HumanTargetQueue2,
-        kTraining_AltHumanTargetList, 0x448, 0x450, 0x490, 0x3D8, 0x3E8
-    };
-    for (uint64_t off : trainingOffsets) {
-        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + off)));
-    }
+    // 4. MatchGame fields on currentMatchGame
+    uintptr_t matchObj = 0;
+    uintptr_t uiScene = 0;
+    if (validOffsetPtr(currentMatchGame)) {
+        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kMatchGame_ReplicationEntities)));
+        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kMatchGame_LReplicationEntities)));
 
-    // 6. UIScene player dictionaries (Training Ground / Social Area)
-    uintptr_t uiScene = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kBaseGame_UIScene));
-    if (validOffsetPtr(uiScene)) {
-        const uint64_t sceneDictOffsets[] = {
-            0x128, 0x130, 0x140, 0x148, 0x150, 0x5D8, 0x5E0,
-            0x4C0, 0x1088, 0x20, 0x70, 0x88, 0x90, 0xA0, 0x2F8
+        matchObj = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kMatchGame_Match));
+        if (validOffsetPtr(matchObj)) {
+            const uint64_t matchOffsets[] = {
+                kMatch_Players1, kMatch_Players2, kMatch_Players3, kMatch_Players4, kMatch_Players5,
+                kMatch_PlayerList1, kMatch_PlayerList2, kMatch_AIPawns, kMatch_Teams, kMatch_Vehicles, kMatch_Containers
+            };
+            for (uint64_t off : matchOffsets) {
+                consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, matchObj + off)));
+            }
+        }
+
+        const uint64_t trainingOffsets[] = {
+            kTraining_HumanTargetList, kTraining_HumanTargetQueue1, kTraining_HumanTargetQueue2,
+            kTraining_MovableShootingTargetList, kTraining_AltHumanTargetList, 0x448, 0x450, 0x490, 0x3D8, 0x3E8
         };
-        for (uint64_t off : sceneDictOffsets) {
-            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, uiScene + off)));
+        for (uint64_t off : trainingOffsets) {
+            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + off)));
+        }
+
+        uiScene = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kBaseGame_UIScene));
+        if (validOffsetPtr(uiScene)) {
+            const uint64_t sceneDictOffsets[] = {
+                0x128, 0x130, 0x140, 0x148, 0x150, 0x5D8, 0x5E0,
+                0x4C0, 0x1088, 0x20, 0x70, 0x88, 0x90, 0xA0, 0x2F8
+            };
+            for (uint64_t off : sceneDictOffsets) {
+                consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, uiScene + off)));
+            }
         }
     }
 
@@ -995,10 +1053,26 @@ NS_ASSUME_NONNULL_BEGIN
         return bestContainer;
     }
 
-    // 7. Universal dynamic scan across currentMatchGame, m_Match, and uiScene
-    for (uint64_t off = 0x10; off <= 0x600; off += sizeof(uintptr_t)) {
-        uintptr_t cand = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + off));
-        consider(cand);
+    // 5. Universal dynamic scan across ctxMatchGame, currentMatchGame, m_Match, and uiScene
+    if (validOffsetPtr(ctxMatchGame)) {
+        for (uint64_t off = 0x10; off <= 0x600; off += sizeof(uintptr_t)) {
+            uintptr_t cand = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + off));
+            consider(cand);
+        }
+        uintptr_t ctxMatchObj = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + kMatchGame_Match));
+        if (validOffsetPtr(ctxMatchObj)) {
+            for (uint64_t off = 0x10; off <= 0x300; off += sizeof(uintptr_t)) {
+                uintptr_t cand = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchObj + off));
+                consider(cand);
+            }
+        }
+    }
+
+    if (validOffsetPtr(currentMatchGame)) {
+        for (uint64_t off = 0x10; off <= 0x600; off += sizeof(uintptr_t)) {
+            uintptr_t cand = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + off));
+            consider(cand);
+        }
     }
 
     if (validOffsetPtr(matchObj)) {
@@ -1182,13 +1256,26 @@ NS_ASSUME_NONNULL_BEGIN
         remoteCall, staticFields + kGameFacadeStatic_LocalPlayerUserID);
     uint32_t hostTeamID = 0;
 
+    // Resolve ctxMatchGame from BaseGameContext (e.g. Training Ground MatchGame)
+    uintptr_t gameContext = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kBaseGame_GameContext));
+    uintptr_t ctxMatchGame = 0;
+    if (validOffsetPtr(gameContext)) {
+        ctxMatchGame = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, gameContext + kBaseGameContext_MatchGame));
+        if (!validOffsetPtr(ctxMatchGame)) {
+            uintptr_t cand20 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, gameContext + 0x20));
+            if (validOffsetPtr(cand20)) ctxMatchGame = cand20;
+        }
+    }
+
     // 4. Read Entities from MatchGame or BaseGame or UIScene
-    FreeFireEntityContainer containerInfo = [self resolveEntityContainer:remoteCall matchGame:currentMatchGame];
+    FreeFireEntityContainer containerInfo = [self resolveEntityContainer:remoteCall
+                                                               matchGame:currentMatchGame
+                                                            ctxMatchGame:ctxMatchGame];
 
     if (!validOffsetPtr(containerInfo.container)) {
         [self reportStage:
-                  [NSString stringWithFormat:@"stage 5/6: entity container missing (game='%s')",
-                                             matchGameClass]];
+                  [NSString stringWithFormat:@"stage 5/6: entity container missing (game='%s', ctxMg=0x%lx)",
+                                             matchGameClass, (unsigned long)ctxMatchGame]];
         @synchronized(self) {
             self.hasValidFrame = NO;
         }
@@ -1197,11 +1284,12 @@ NS_ASSUME_NONNULL_BEGIN
 
     if (containerInfo.count <= 0 || containerInfo.count > 10000) {
         [self reportStage:
-                  [NSString stringWithFormat:@"stage 5/6: entities=%d (dict=0x%lx, isList=%d, game='%s', waiting for targets/match)",
+                  [NSString stringWithFormat:@"stage 5/6: entities=%d (dict=0x%lx, type=%d, game='%s', ctxMg=0x%lx, waiting for targets/match)",
                                              (int)containerInfo.count,
                                              (unsigned long)containerInfo.container,
-                                             containerInfo.isList ? 1 : 0,
-                                             matchGameClass]];
+                                             containerInfo.containerType,
+                                             matchGameClass,
+                                             (unsigned long)ctxMatchGame]];
         @synchronized(self) {
             self.hasValidFrame = NO;
         }
@@ -1209,7 +1297,7 @@ NS_ASSUME_NONNULL_BEGIN
     }
 
     int32_t loopLimit = containerInfo.count;
-    if (!containerInfo.isList && validOffsetPtr(containerInfo.arrayPtr)) {
+    if (containerInfo.containerType == kContainerType_Dictionary && validOffsetPtr(containerInfo.arrayPtr)) {
         int32_t arrLen = ReadMemorySafe<int32_t>(remoteCall, containerInfo.arrayPtr + kArray_Length);
         if (arrLen > 0)
             loopLimit = std::min(arrLen, 2048);
@@ -1287,8 +1375,10 @@ NS_ASSUME_NONNULL_BEGIN
                                 strstr(className, "Target") != NULL ||
                                 strstr(className, "Dummy") != NULL ||
                                 strstr(className, "AIPawn") != NULL ||
+                                strstr(className, "Stand") != NULL ||
                                 IsSubclassOf(remoteCall, entity, "Player") ||
-                                IsSubclassOf(remoteCall, entity, "AttackableEntity"));
+                                IsSubclassOf(remoteCall, entity, "AttackableEntity") ||
+                                IsSubclassOf(remoteCall, entity, "Entity"));
         } else {
             // Structural fallback: check if entity has a valid 3D position
             Vector3 testPos = Vector3::zero();

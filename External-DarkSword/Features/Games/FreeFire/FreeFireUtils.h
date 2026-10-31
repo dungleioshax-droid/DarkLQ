@@ -243,15 +243,16 @@ struct UnityMatrix3x4 {
 
 static bool ReadTransformPosition(RemoteCall *remoteCall,
                                   uintptr_t managedTransform, Vector3 *outPos) {
+    managedTransform = CleanPointer(managedTransform);
     if (!validOffsetPtr(managedTransform) || !remoteCall || !outPos)
         return false;
 
-    uintptr_t nativeTransform = ReadMemorySafe<uintptr_t>(
-        remoteCall, managedTransform + kUnityObject_CachedPtr);
+    uintptr_t nativeTransform = CleanPointer(ReadMemorySafe<uintptr_t>(
+        remoteCall, managedTransform + kUnityObject_CachedPtr));
     if (!validOffsetPtr(nativeTransform)) {
-        nativeTransform = ReadMemorySafe<uintptr_t>(remoteCall, managedTransform + 0x8);
+        nativeTransform = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, managedTransform + 0x8));
         if (!validOffsetPtr(nativeTransform)) {
-            nativeTransform = ReadMemorySafe<uintptr_t>(remoteCall, managedTransform + 0x18);
+            nativeTransform = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, managedTransform + 0x18));
         }
     }
     if (!validOffsetPtr(nativeTransform))
@@ -259,16 +260,16 @@ static bool ReadTransformPosition(RemoteCall *remoteCall,
 
     // TransformAccessReadOnly at nativeTransform + 0x38
     uintptr_t pTransformAccess =
-        ReadMemorySafe<uintptr_t>(remoteCall, nativeTransform + 0x38);
+        CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, nativeTransform + 0x38));
     int32_t index =
         ReadMemorySafe<int32_t>(remoteCall, nativeTransform + 0x40);
 
     if (validOffsetPtr(pTransformAccess) && index >= 0 && index < 20000) {
         uintptr_t pTransformArray =
-            ReadMemorySafe<uintptr_t>(remoteCall, pTransformAccess + 0x18);
+            CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, pTransformAccess + 0x18));
         if (!validOffsetPtr(pTransformArray)) {
             pTransformArray =
-                ReadMemorySafe<uintptr_t>(remoteCall, pTransformAccess);
+                CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, pTransformAccess));
         }
 
         if (validOffsetPtr(pTransformArray)) {
@@ -373,6 +374,7 @@ static bool gGameFacadeNameScanned = false;
 
 static bool ReadKlassName(RemoteCall *remoteCall, uintptr_t klass,
                           char *out, size_t capacity) {
+    klass = CleanPointer(klass);
     if (!remoteCall || !validOffsetPtr(klass) || !out || capacity == 0)
         return false;
 
@@ -383,7 +385,7 @@ static bool ReadKlassName(RemoteCall *remoteCall, uintptr_t klass,
     const uint64_t candidateOffsets[] = { 0x10, 0x18, 0x20, 0x28, 0x30, 0x08 };
     for (int i = 0; i < 6; ++i) {
         uint64_t off = candidateOffsets[i];
-        uintptr_t namePtr = ReadMemorySafe<uintptr_t>(remoteCall, klass + off);
+        uintptr_t namePtr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + off));
         if (!validOffsetPtr(namePtr))
             continue;
 
@@ -430,10 +432,11 @@ static bool ReadIl2CppClassName(RemoteCall *remoteCall, uintptr_t object,
         return false;
 
     out[0] = '\0';
+    object = CleanPointer(object);
     if (!validOffsetPtr(object))
         return false;
 
-    uintptr_t klass = ReadMemorySafe<uintptr_t>(remoteCall, object);
+    uintptr_t klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, object));
     if (!validOffsetPtr(klass))
         return false;
 
@@ -485,10 +488,11 @@ static bool FreeFireStaticBlockHasGameSlot(RemoteCall *remoteCall, uintptr_t blo
 
 static bool IsSubclassOf(RemoteCall *remoteCall, uintptr_t object,
                          const char *targetName) {
+    object = CleanPointer(object);
     if (!remoteCall || !validOffsetPtr(object) || !targetName)
         return false;
 
-    uintptr_t klass = ReadMemorySafe<uintptr_t>(remoteCall, object);
+    uintptr_t klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, object));
     for (int depth = 0; depth < 10 && validOffsetPtr(klass); ++depth) {
         char buffer[64] = {0};
         if (ReadKlassName(remoteCall, klass, buffer, sizeof(buffer))) {
@@ -496,7 +500,7 @@ static bool IsSubclassOf(RemoteCall *remoteCall, uintptr_t object,
                 return true;
             }
         }
-        klass = ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Parent);
+        klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Parent));
     }
     return false;
 }
@@ -524,15 +528,30 @@ static uint64_t gFreeFireCameraManagerFieldOffset = 0;
 static uint64_t gFreeFireCameraFieldOffset = 0;
 static uint64_t gFreeFireEntitiesFieldOffset = 0;
 
+enum FreeFireContainerType {
+    kContainerType_None = 0,
+    kContainerType_Dictionary = 1,
+    kContainerType_List = 2,
+    kContainerType_Queue = 3,
+    kContainerType_Array = 4
+};
+
 struct FreeFireEntityContainer {
     uintptr_t container = 0;
+    int containerType = kContainerType_None;
     bool isList = false;
     int32_t count = 0;
     uintptr_t arrayPtr = 0;
+    int32_t head = 0;
+    int32_t capacity = 0;
 };
 
 static inline bool InspectEntityContainer(RemoteCall *remoteCall, uintptr_t cand, FreeFireEntityContainer *outContainer) {
-    if (!remoteCall || !validOffsetPtr(cand) || !outContainer)
+    if (!remoteCall || !outContainer)
+        return false;
+
+    cand = CleanPointer(cand);
+    if (!validOffsetPtr(cand))
         return false;
 
     // 1. Check Dictionary: 0x18 = entries, 0x20 = count
@@ -542,23 +561,63 @@ static inline bool InspectEntityContainer(RemoteCall *remoteCall, uintptr_t cand
         int32_t arrLen = ReadMemorySafe<int32_t>(remoteCall, entries + kArray_Length);
         if (arrLen >= dictCount && arrLen <= 25000) {
             outContainer->container = cand;
+            outContainer->containerType = kContainerType_Dictionary;
             outContainer->isList = false;
             outContainer->count = dictCount;
             outContainer->arrayPtr = entries;
+            outContainer->head = 0;
+            outContainer->capacity = arrLen;
             return true;
         }
     }
 
-    // 2. Check List<T>: 0x10 = _items, 0x18 = _size
+    // 2. Check Queue<T>: 0x10 = _array, 0x18 = _head, 0x20 = _size
+    uintptr_t qArray = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, cand + 0x10));
+    int32_t qHead = ReadMemorySafe<int32_t>(remoteCall, cand + 0x18);
+    int32_t qSize = ReadMemorySafe<int32_t>(remoteCall, cand + 0x20);
+    if (validOffsetPtr(qArray) && qSize >= 0 && qSize < 10000 && qHead >= 0) {
+        int32_t arrLen = ReadMemorySafe<int32_t>(remoteCall, qArray + kArray_Length);
+        if (arrLen >= qSize && arrLen <= 25000 && (arrLen == 0 || qHead < arrLen)) {
+            outContainer->container = cand;
+            outContainer->containerType = kContainerType_Queue;
+            outContainer->isList = true;
+            outContainer->count = qSize;
+            outContainer->arrayPtr = qArray;
+            outContainer->head = qHead;
+            outContainer->capacity = arrLen;
+            return true;
+        }
+    }
+
+    // 3. Check List<T>: 0x10 = _items, 0x18 = _size
     uintptr_t items = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, cand + 0x10));
     int32_t listSize = ReadMemorySafe<int32_t>(remoteCall, cand + 0x18);
     if (validOffsetPtr(items) && listSize >= 0 && listSize < 10000) {
         int32_t arrLen = ReadMemorySafe<int32_t>(remoteCall, items + kArray_Length);
         if (arrLen >= listSize && arrLen <= 25000) {
             outContainer->container = cand;
+            outContainer->containerType = kContainerType_List;
             outContainer->isList = true;
             outContainer->count = listSize;
             outContainer->arrayPtr = items;
+            outContainer->head = 0;
+            outContainer->capacity = arrLen;
+            return true;
+        }
+    }
+
+    // 4. Check direct Array: 0x18 = length
+    int32_t directArrLen = ReadMemorySafe<int32_t>(remoteCall, cand + kArray_Length);
+    if (directArrLen > 0 && directArrLen <= 2000) {
+        uintptr_t bounds = ReadMemorySafe<uintptr_t>(remoteCall, cand + 0x10);
+        if (bounds == 0) {
+            outContainer->container = cand;
+            outContainer->containerType = kContainerType_Array;
+            outContainer->isList = true;
+            outContainer->count = directArrLen;
+            outContainer->arrayPtr = cand;
+            outContainer->head = 0;
+            outContainer->capacity = directArrLen;
             return true;
         }
     }
@@ -569,18 +628,29 @@ static inline bool InspectEntityContainer(RemoteCall *remoteCall, uintptr_t cand
 static inline uintptr_t GetEntityFromContainer(RemoteCall *remoteCall,
                                                const FreeFireEntityContainer &c,
                                                int32_t index) {
-    if (!remoteCall || !validOffsetPtr(c.arrayPtr) || index < 0)
+    if (!remoteCall || !validOffsetPtr(c.arrayPtr) || index < 0 || index >= c.count)
         return 0;
 
-    if (c.isList) {
-        return CleanPointer(ReadMemorySafe<uintptr_t>(
-            remoteCall, c.arrayPtr + kArray_Vector + (uint64_t)index * sizeof(uintptr_t)));
-    } else {
-        uintptr_t entryAddr = c.arrayPtr + kArray_Vector + (uint64_t)index * kEntry_Size;
-        int32_t hashCode = ReadMemorySafe<int32_t>(remoteCall, entryAddr + kEntry_HashCode);
-        if (hashCode < 0)
-            return 0;
-        return CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entryAddr + kEntry_Value));
+    switch (c.containerType) {
+        case kContainerType_Dictionary: {
+            uintptr_t entryAddr = c.arrayPtr + kArray_Vector + (uint64_t)index * kEntry_Size;
+            int32_t hashCode = ReadMemorySafe<int32_t>(remoteCall, entryAddr + kEntry_HashCode);
+            if (hashCode < 0)
+                return 0;
+            return CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entryAddr + kEntry_Value));
+        }
+        case kContainerType_Queue: {
+            if (c.capacity <= 0) return 0;
+            int32_t qIndex = (c.head + index) % c.capacity;
+            return CleanPointer(ReadMemorySafe<uintptr_t>(
+                remoteCall, c.arrayPtr + kArray_Vector + (uint64_t)qIndex * sizeof(uintptr_t)));
+        }
+        case kContainerType_List:
+        case kContainerType_Array:
+        default: {
+            return CleanPointer(ReadMemorySafe<uintptr_t>(
+                remoteCall, c.arrayPtr + kArray_Vector + (uint64_t)index * sizeof(uintptr_t)));
+        }
     }
 }
 
