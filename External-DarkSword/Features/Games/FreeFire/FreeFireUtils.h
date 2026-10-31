@@ -80,6 +80,7 @@ static bool ReadValidMatrix(RemoteCall *remoteCall, uintptr_t address,
                             float *out) {
     if (!validOffsetPtr(address) || !out || !remoteCall)
         return false;
+    address = CleanPointer(address);
     if (![remoteCall remoteRead:address to:out size:sizeof(float) * 16])
         return false;
 
@@ -95,7 +96,10 @@ static bool ReadValidMatrix(RemoteCall *remoteCall, uintptr_t address,
 
 
 static bool LooksLikeViewProjection(const float *matrix) {
-    return fabsf(matrix[11]) > 0.01f || fabsf(matrix[15]) < 0.95f;
+    if (!matrix)
+        return false;
+    return fabsf(matrix[11]) > 0.01f || fabsf(matrix[14]) > 0.01f ||
+           fabsf(matrix[15]) < 0.95f;
 }
 
 // Native camera matrix offsets drift between Unity builds; remember the ones
@@ -105,35 +109,44 @@ static uint64_t gFreeFireNativeCameraViewOffset = kNativeCamera_WorldToCamera;
 static uint64_t gFreeFireNativeCameraProjectionOffset = kNativeCamera_Projection;
 static uint64_t gFreeFireNativeCameraWorldToClipOffset = kNativeCamera_WorldToClip;
 static bool gFreeFireNativeCameraOffsetsResolved = false;
-static NSTimeInterval gFreeFireNativeCameraLastDiscoveryAttempt = 0.0;
 
 static bool ReadCameraVPAndWorldMatrix(RemoteCall *remoteCall, uintptr_t camera,
                                       float *outVP, float *outView) {
     if (!validOffsetPtr(camera) || !remoteCall || !outVP)
         return false;
 
-    uintptr_t nativeCamera =
-        ReadMemorySafe<uintptr_t>(remoteCall, camera + kUnityObject_CachedPtr);
+    camera = CleanPointer(camera);
+
+    uintptr_t nativeCamera = CleanPointer(
+        ReadMemorySafe<uintptr_t>(remoteCall, camera + kUnityObject_CachedPtr));
     if (!validOffsetPtr(nativeCamera)) {
-        nativeCamera = ReadMemorySafe<uintptr_t>(remoteCall, camera + 0x8);
+        nativeCamera =
+            CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, camera + 0x8));
         if (!validOffsetPtr(nativeCamera)) {
-            nativeCamera = ReadMemorySafe<uintptr_t>(remoteCall, camera + 0x18);
+            nativeCamera = CleanPointer(
+                ReadMemorySafe<uintptr_t>(remoteCall, camera + 0x18));
+            if (!validOffsetPtr(nativeCamera)) {
+                nativeCamera = CleanPointer(
+                    ReadMemorySafe<uintptr_t>(remoteCall, camera + 0x20));
+                if (!validOffsetPtr(nativeCamera)) {
+                    nativeCamera = camera;
+                }
+            }
         }
     }
     if (!validOffsetPtr(nativeCamera))
         return false;
 
     // Try the offsets that worked before (or the dump defaults) first.
-    uint64_t candidateViewOffsets[4] = {
-        gFreeFireNativeCameraViewOffset, kNativeCamera_WorldToCamera, 0x70, 0x90
+    uint64_t candidateViewOffsets[] = {
+        gFreeFireNativeCameraViewOffset, kNativeCamera_WorldToCamera, 0x70, 0x80, 0x90, 0xA0
     };
-    uint64_t candidateProjOffsets[4] = {
-        gFreeFireNativeCameraProjectionOffset, kNativeCamera_Projection, 0xB0,
-        0xD0
+    uint64_t candidateProjOffsets[] = {
+        gFreeFireNativeCameraProjectionOffset, kNativeCamera_Projection, 0xB0, 0xC0, 0xD0, 0xE0
     };
-    uint64_t candidateClipOffsets[4] = {
-        gFreeFireNativeCameraWorldToClipOffset, kNativeCamera_WorldToClip, 0xF0,
-        0x110
+    uint64_t candidateClipOffsets[] = {
+        gFreeFireNativeCameraWorldToClipOffset, kNativeCamera_WorldToClip, 0x100,
+        0xF0, 0x110, 0x120, 0x130, 0x140, 0x180, 0x1C0, 0x200
     };
 
     auto tryViewProjection = [&](uint64_t viewOff, uint64_t projOff) -> bool {
@@ -176,29 +189,29 @@ static bool ReadCameraVPAndWorldMatrix(RemoteCall *remoteCall, uintptr_t camera,
         return true;
     };
 
-    for (int i = 0; i < 4; ++i) {
+    for (size_t i = 0;
+         i < sizeof(candidateViewOffsets) / sizeof(candidateViewOffsets[0]);
+         ++i) {
         if (tryViewProjection(candidateViewOffsets[i],
-                             candidateProjOffsets[i]))
+                              candidateProjOffsets[i]))
             return true;
     }
-    for (int i = 0; i < 4; ++i) {
+    for (size_t i = 0;
+         i < sizeof(candidateClipOffsets) / sizeof(candidateClipOffsets[0]);
+         ++i) {
         if (tryWorldToClip(candidateClipOffsets[i]))
             return true;
     }
 
-    // Last resort: discover offsets by scanning the native camera. Throttle
-    // this so a bad frame doesn't trigger a full scan every 16 ms.
-    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-    if (now - gFreeFireNativeCameraLastDiscoveryAttempt < 2.0)
-        return false;
-    gFreeFireNativeCameraLastDiscoveryAttempt = now;
-
-    for (uint64_t clipOff = 0x40; clipOff <= 0x180; clipOff += 0x10) {
+    // Extended discovery: scan native camera for worldToClip matrix
+    for (uint64_t clipOff = 0x40; clipOff <= 0x260; clipOff += 0x8) {
         if (tryWorldToClip(clipOff))
             return true;
     }
-    for (uint64_t viewOff = 0x40; viewOff <= 0x140; viewOff += 0x10) {
-        for (uint64_t projOff = 0x40; projOff <= 0x140; projOff += 0x10) {
+
+    // Extended discovery: scan native camera for view * proj matrix pairs
+    for (uint64_t viewOff = 0x40; viewOff <= 0x180; viewOff += 0x10) {
+        for (uint64_t projOff = 0x40; projOff <= 0x180; projOff += 0x10) {
             if (viewOff == projOff)
                 continue;
             if (tryViewProjection(viewOff, projOff))
