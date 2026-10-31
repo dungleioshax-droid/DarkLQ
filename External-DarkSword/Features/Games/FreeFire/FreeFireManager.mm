@@ -70,8 +70,8 @@ NS_ASSUME_NONNULL_BEGIN
             matchGame:(uintptr_t)currentMatchGame
                camera:(uintptr_t *)outCamera
                camMgr:(uintptr_t *)outCamMgr;
-- (uintptr_t)resolveEntityDictionary:(RemoteCall *)remoteCall
-                           matchGame:(uintptr_t)currentMatchGame;
+- (FreeFireEntityContainer)resolveEntityContainer:(RemoteCall *)remoteCall
+                                        matchGame:(uintptr_t)currentMatchGame;
 - (BOOL)discoveryDue;
 - (BOOL)diagnosticsDue;
 - (void)reportDiagnostics:(NSString *)message;
@@ -883,33 +883,57 @@ NS_ASSUME_NONNULL_BEGIN
     return YES;
 }
 
-- (uintptr_t)resolveEntityDictionary:(RemoteCall *)remoteCall
-                           matchGame:(uintptr_t)currentMatchGame {
+- (FreeFireEntityContainer)resolveEntityContainer:(RemoteCall *)remoteCall
+                                        matchGame:(uintptr_t)currentMatchGame {
+    FreeFireEntityContainer emptyContainer;
     if (!remoteCall || !validOffsetPtr(currentMatchGame))
-        return 0;
+        return emptyContainer;
 
-    auto getDictCount = [&](uintptr_t dict) -> int32_t {
-        if (!validOffsetPtr(dict) || !IsDictionaryObject(remoteCall, dict))
-            return -1;
-        return ReadMemorySafe<int32_t>(remoteCall, dict + kDictionary_Count);
-    };
+    FreeFireEntityContainer bestContainer;
+    int bestScore = 0;
+    FreeFireEntityContainer firstValidContainer;
 
-    uintptr_t bestDict = 0;
-    int32_t bestCount = 0;
-    uintptr_t firstValidDict = 0;
+    auto consider = [&](uintptr_t cand) {
+        if (!validOffsetPtr(cand)) return;
+        FreeFireEntityContainer info;
+        if (!InspectEntityContainer(remoteCall, cand, &info))
+            return;
+        if (firstValidContainer.container == 0)
+            firstValidContainer = info;
+        if (info.count <= 0)
+            return;
 
-    auto consider = [&](uintptr_t dict) {
-        if (!validOffsetPtr(dict)) return;
-        int32_t cnt = getDictCount(dict);
-        if (cnt < 0) return;
-        if (firstValidDict == 0) firstValidDict = dict;
-        if (cnt > bestCount) {
-            bestCount = cnt;
-            bestDict = dict;
+        int confirmedEntities = 0;
+        int checkLimit = std::min(info.count, 8);
+        for (int i = 0; i < checkLimit; ++i) {
+            uintptr_t entity = GetEntityFromContainer(remoteCall, info, i);
+            if (!validOffsetPtr(entity)) continue;
+            if (IsSubclassOf(remoteCall, entity, "Player") ||
+                IsSubclassOf(remoteCall, entity, "Entity") ||
+                IsSubclassOf(remoteCall, entity, "AttackableEntity") ||
+                Il2CppClassNameContains(remoteCall, entity, "Player") ||
+                Il2CppClassNameContains(remoteCall, entity, "Entity") ||
+                Il2CppClassNameContains(remoteCall, entity, "Target") ||
+                Il2CppClassNameContains(remoteCall, entity, "Human") ||
+                Il2CppClassNameContains(remoteCall, entity, "Dummy") ||
+                Il2CppClassNameContains(remoteCall, entity, "AIPawn")) {
+                confirmedEntities++;
+            } else {
+                Vector3 testPos = Vector3::zero();
+                if (ReadEntityPosition(remoteCall, entity, &testPos)) {
+                    confirmedEntities++;
+                }
+            }
+        }
+
+        int score = (confirmedEntities > 0 ? 10000 : 0) + info.count;
+        if (score > bestScore) {
+            bestScore = score;
+            bestContainer = info;
         }
     };
 
-    // 1. BaseGame static fields via MethodInfo (0x1FB5CD28)
+    // 1. BaseGame static fields via MethodInfo (0x1FB5D028)
     uintptr_t bgMethod = self.binaryBase + kMethodInfo_BaseGame_CCtor;
     uintptr_t bgKlass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgMethod + kMethodInfo_Klass));
     if (validOffsetPtr(bgKlass)) {
@@ -929,11 +953,32 @@ NS_ASSUME_NONNULL_BEGIN
         consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sAllLEntities)));
     }
 
-    // 3. MatchGame fields (0xC0: m_ReplicationEntitis, 0xC8: m_LReplicationEntitis)
+    // 3. MatchGame fields: m_ReplicationEntitis (0xC0), m_LReplicationEntitis (0xC8)
     consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kMatchGame_ReplicationEntities)));
-    consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + 0xC8)));
+    consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kMatchGame_LReplicationEntities)));
 
-    // 4. UIScene player dictionaries (Training Mode / Social Area)
+    // 4. MatchGame.m_Match (0x90) player dictionaries & lists
+    uintptr_t matchObj = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kMatchGame_Match));
+    if (validOffsetPtr(matchObj)) {
+        const uint64_t matchOffsets[] = {
+            kMatch_Players1, kMatch_Players2, kMatch_Players3, kMatch_Players4, kMatch_Players5,
+            kMatch_PlayerList1, kMatch_PlayerList2, kMatch_AIPawns, kMatch_Teams, kMatch_Vehicles, kMatch_Containers
+        };
+        for (uint64_t off : matchOffsets) {
+            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, matchObj + off)));
+        }
+    }
+
+    // 5. Training Mode specific fields on currentMatchGame
+    const uint64_t trainingOffsets[] = {
+        kTraining_HumanTargetList, kTraining_HumanTargetQueue1, kTraining_HumanTargetQueue2,
+        kTraining_AltHumanTargetList, 0x448, 0x450, 0x490, 0x3D8, 0x3E8
+    };
+    for (uint64_t off : trainingOffsets) {
+        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + off)));
+    }
+
+    // 6. UIScene player dictionaries (Training Ground / Social Area)
     uintptr_t uiScene = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kBaseGame_UIScene));
     if (validOffsetPtr(uiScene)) {
         const uint64_t sceneDictOffsets[] = {
@@ -945,31 +990,32 @@ NS_ASSUME_NONNULL_BEGIN
         }
     }
 
-    if (bestCount > 0) {
-        return bestDict;
+    // If a confirmed entity container with count > 0 is found, return it immediately
+    if (bestScore > 0) {
+        return bestContainer;
     }
 
-    // 5. Scan currentMatchGame fields for player dictionary
-    if ([self discoveryDue]) {
+    // 7. Universal dynamic scan across currentMatchGame, m_Match, and uiScene
+    for (uint64_t off = 0x10; off <= 0x600; off += sizeof(uintptr_t)) {
+        uintptr_t cand = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + off));
+        consider(cand);
+    }
+
+    if (validOffsetPtr(matchObj)) {
         for (uint64_t off = 0x10; off <= 0x300; off += sizeof(uintptr_t)) {
-            uintptr_t cand = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + off));
-            if (validOffsetPtr(cand) && IsDictionaryObject(remoteCall, cand)) {
-                consider(cand);
-            }
-        }
-
-        // 6. Scan uiScene fields for player dictionary
-        if (bestCount == 0 && validOffsetPtr(uiScene)) {
-            for (uint64_t off = 0x20; off <= 0x600; off += sizeof(uintptr_t)) {
-                uintptr_t cand = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, uiScene + off));
-                if (validOffsetPtr(cand) && IsDictionaryObject(remoteCall, cand)) {
-                    consider(cand);
-                }
-            }
+            uintptr_t cand = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, matchObj + off));
+            consider(cand);
         }
     }
 
-    return bestDict != 0 ? bestDict : firstValidDict;
+    if (validOffsetPtr(uiScene)) {
+        for (uint64_t off = 0x20; off <= 0x600; off += sizeof(uintptr_t)) {
+            uintptr_t cand = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, uiScene + off));
+            consider(cand);
+        }
+    }
+
+    return bestContainer.container != 0 ? bestContainer : firstValidContainer;
 }
 
 - (void)updateSnapshot:(RemoteCall *)remoteCall {
@@ -1137,11 +1183,11 @@ NS_ASSUME_NONNULL_BEGIN
     uint32_t hostTeamID = 0;
 
     // 4. Read Entities from MatchGame or BaseGame or UIScene
-    uintptr_t repDict = [self resolveEntityDictionary:remoteCall matchGame:currentMatchGame];
+    FreeFireEntityContainer containerInfo = [self resolveEntityContainer:remoteCall matchGame:currentMatchGame];
 
-    if (!validOffsetPtr(repDict)) {
+    if (!validOffsetPtr(containerInfo.container)) {
         [self reportStage:
-                  [NSString stringWithFormat:@"stage 5/6: entity dictionary missing (game='%s')",
+                  [NSString stringWithFormat:@"stage 5/6: entity container missing (game='%s')",
                                              matchGameClass]];
         @synchronized(self) {
             self.hasValidFrame = NO;
@@ -1149,31 +1195,25 @@ NS_ASSUME_NONNULL_BEGIN
         return;
     }
 
-    int32_t dictCount =
-        ReadMemorySafe<int32_t>(remoteCall, repDict + kDictionary_Count);
-    if (dictCount <= 0 || dictCount > 10000) {
+    if (containerInfo.count <= 0 || containerInfo.count > 10000) {
         [self reportStage:
-                  [NSString stringWithFormat:@"stage 5/6: entities=%d (dict=0x%lx, waiting for targets/match)",
-                                             (int)dictCount, (unsigned long)repDict]];
+                  [NSString stringWithFormat:@"stage 5/6: entities=%d (dict=0x%lx, isList=%d, game='%s', waiting for targets/match)",
+                                             (int)containerInfo.count,
+                                             (unsigned long)containerInfo.container,
+                                             containerInfo.isList ? 1 : 0,
+                                             matchGameClass]];
         @synchronized(self) {
             self.hasValidFrame = NO;
         }
         return;
     }
 
-    uintptr_t entriesArray = CleanPointer(
-        ReadMemorySafe<uintptr_t>(remoteCall, repDict + kDictionary_Entries));
-    if (!validOffsetPtr(entriesArray)) {
-        [self reportStage:@"stage 5/6: dictionary entries unreadable"];
-        @synchronized(self) {
-            self.hasValidFrame = NO;
-        }
-        return;
+    int32_t loopLimit = containerInfo.count;
+    if (!containerInfo.isList && validOffsetPtr(containerInfo.arrayPtr)) {
+        int32_t arrLen = ReadMemorySafe<int32_t>(remoteCall, containerInfo.arrayPtr + kArray_Length);
+        if (arrLen > 0)
+            loopLimit = std::min(arrLen, 2048);
     }
-
-    int32_t maxEntries = ReadMemorySafe<int32_t>(
-        remoteCall, entriesArray + kArray_Length);
-    int32_t loopLimit = std::min(maxEntries, 2048);
 
     CGFloat sw = self.remoteWebViewOverlay.cachedScreenWidth;
     CGFloat sh = self.remoteWebViewOverlay.cachedScreenHeight;
@@ -1185,15 +1225,7 @@ NS_ASSUME_NONNULL_BEGIN
     // Pass 1: find hostTeamID if localUserID is known
     if (localUserID != 0) {
         for (int32_t i = 0; i < loopLimit; ++i) {
-            uintptr_t entryAddr =
-                entriesArray + kArray_Vector + (uint64_t)i * kEntry_Size;
-            int32_t hashCode =
-                ReadMemorySafe<int32_t>(remoteCall, entryAddr + kEntry_HashCode);
-            if (hashCode < 0)
-                continue;
-
-            uintptr_t entity = CleanPointer(
-                ReadMemorySafe<uintptr_t>(remoteCall, entryAddr + kEntry_Value));
+            uintptr_t entity = GetEntityFromContainer(remoteCall, containerInfo, i);
             if (!validOffsetPtr(entity))
                 continue;
 
@@ -1220,15 +1252,7 @@ NS_ASSUME_NONNULL_BEGIN
     std::string sampleClasses;
 
     for (int32_t i = 0; i < loopLimit; ++i) {
-        uintptr_t entryAddr =
-            entriesArray + kArray_Vector + (uint64_t)i * kEntry_Size;
-        int32_t hashCode =
-            ReadMemorySafe<int32_t>(remoteCall, entryAddr + kEntry_HashCode);
-        if (hashCode < 0)
-            continue;
-
-        uintptr_t entity = CleanPointer(
-            ReadMemorySafe<uintptr_t>(remoteCall, entryAddr + kEntry_Value));
+        uintptr_t entity = GetEntityFromContainer(remoteCall, containerInfo, i);
         if (!validOffsetPtr(entity))
             continue;
 
@@ -1400,13 +1424,15 @@ NS_ASSUME_NONNULL_BEGIN
         [self
             reportDiagnostics:
                 [NSString
-                    stringWithFormat:@"ok: camMgr=0x%lx cam=0x%lx dict=0x%lx "
-                                     @"count=%d scanned=%lu nonPlayer=%lu "
+                    stringWithFormat:@"ok: camMgr=0x%lx cam=0x%lx container=0x%lx "
+                                     @"isList=%d count=%d scanned=%lu nonPlayer=%lu "
                                      @"dead=%lu team=%lu noPos=%lu noProj=%lu "
                                      @"projected=%lu classes=[%s]",
                                      (unsigned long)camMgr,
                                      (unsigned long)camera,
-                                     (unsigned long)repDict, (int)dictCount,
+                                     (unsigned long)containerInfo.container,
+                                     containerInfo.isList ? 1 : 0,
+                                     (int)containerInfo.count,
                                      (unsigned long)scannedCount,
                                      (unsigned long)nonPlayerCount,
                                      (unsigned long)deadSkipped,

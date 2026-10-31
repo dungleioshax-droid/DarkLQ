@@ -52,7 +52,7 @@ inline constexpr uint64_t kGameFacadeStatic_CurrentMatchGame = 0x08;
 inline constexpr uint64_t kGameFacadeStatic_LocalPlayerUserID = 0x58;
 
 // BaseGame & UIFrontEndScene Fields (Training Ground / Social Area)
-inline constexpr uint64_t kMethodInfo_BaseGame_CCtor = 0x1FB5CD28;
+inline constexpr uint64_t kMethodInfo_BaseGame_CCtor = 0x1FB5D028;
 inline constexpr uint64_t kBaseGame_UIScene = 0x10;
 inline constexpr uint64_t kBaseGameStatic_sTickedEntities = 0x00;
 inline constexpr uint64_t kBaseGameStatic_sAllEntities = 0x08;
@@ -74,8 +74,29 @@ inline constexpr uint64_t kUICameraStatic_CurrentCamera = 0xB8;
 inline constexpr uint64_t kUICamera_mCam = 0x98;
 
 // MatchGame Fields
+inline constexpr uint64_t kMatchGame_Match = 0x90;
 inline constexpr uint64_t kMatchGame_ReplicationEntities = 0xC0;
+inline constexpr uint64_t kMatchGame_LReplicationEntities = 0xC8;
 inline constexpr uint64_t kMatchGame_CameraControllerManager = 0xD8;
+
+// Match (JMAGGLCNGIG at MatchGame + 0x90) Dictionaries & Lists
+inline constexpr uint64_t kMatch_Players1 = 0x128; // Dictionary<BEADLMGGGGL, Player>
+inline constexpr uint64_t kMatch_Players2 = 0x130; // Dictionary<BEADLMGGGGL, Player>
+inline constexpr uint64_t kMatch_Players3 = 0x140; // Dictionary<BEADLMGGGGL, Player>
+inline constexpr uint64_t kMatch_Players4 = 0x148; // Dictionary<byte, Player>
+inline constexpr uint64_t kMatch_Players5 = 0x150; // Dictionary<BEADLMGGGGL, Player>
+inline constexpr uint64_t kMatch_PlayerList1 = 0x158; // List<Player>
+inline constexpr uint64_t kMatch_PlayerList2 = 0x160; // List<Player>
+inline constexpr uint64_t kMatch_AIPawns = 0x168; // Dictionary<BEADLMGGGGL, NetworkAIPawn>
+inline constexpr uint64_t kMatch_Teams = 0x178; // Dictionary<byte, MatchTeam>
+inline constexpr uint64_t kMatch_Vehicles = 0x188; // Dictionary<ushort, LevelVehicle>
+inline constexpr uint64_t kMatch_Containers = 0x2A0; // Dictionary<uint, LevelContainer>
+
+// Training Game (MNDPBJMLABJ / AKFIPICCGAP) Targets
+inline constexpr uint64_t kTraining_HumanTargetList = 0x478; // List<Player_TrainingHumanTarget_Stand>
+inline constexpr uint64_t kTraining_HumanTargetQueue1 = 0x468; // Queue<Player_TrainingHumanTarget>
+inline constexpr uint64_t kTraining_HumanTargetQueue2 = 0x470; // Queue<Player_TrainingHumanTarget>
+inline constexpr uint64_t kTraining_AltHumanTargetList = 0x288;
 
 // CameraControllerManager Fields
 inline constexpr uint64_t kCameraControllerManager_MainCamera = 0x20;

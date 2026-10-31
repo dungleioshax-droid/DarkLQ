@@ -297,8 +297,8 @@ static bool ReadEntityPosition(RemoteCall *remoteCall, uintptr_t entity,
         return false;
 
     // 1. Try Transform
-    uintptr_t transform =
-        ReadMemorySafe<uintptr_t>(remoteCall, entity + kEntity_CachedTransform);
+    uintptr_t transform = CleanPointer(
+        ReadMemorySafe<uintptr_t>(remoteCall, entity + kEntity_CachedTransform));
     if (validOffsetPtr(transform)) {
         if (ReadTransformPosition(remoteCall, transform, outPos)) {
             return true;
@@ -524,6 +524,66 @@ static uint64_t gFreeFireCameraManagerFieldOffset = 0;
 static uint64_t gFreeFireCameraFieldOffset = 0;
 static uint64_t gFreeFireEntitiesFieldOffset = 0;
 
+struct FreeFireEntityContainer {
+    uintptr_t container = 0;
+    bool isList = false;
+    int32_t count = 0;
+    uintptr_t arrayPtr = 0;
+};
+
+static inline bool InspectEntityContainer(RemoteCall *remoteCall, uintptr_t cand, FreeFireEntityContainer *outContainer) {
+    if (!remoteCall || !validOffsetPtr(cand) || !outContainer)
+        return false;
+
+    // 1. Check Dictionary: 0x18 = entries, 0x20 = count
+    uintptr_t entries = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, cand + kDictionary_Entries));
+    int32_t dictCount = ReadMemorySafe<int32_t>(remoteCall, cand + kDictionary_Count);
+    if (validOffsetPtr(entries) && dictCount >= 0 && dictCount < 10000) {
+        int32_t arrLen = ReadMemorySafe<int32_t>(remoteCall, entries + kArray_Length);
+        if (arrLen >= dictCount && arrLen <= 25000) {
+            outContainer->container = cand;
+            outContainer->isList = false;
+            outContainer->count = dictCount;
+            outContainer->arrayPtr = entries;
+            return true;
+        }
+    }
+
+    // 2. Check List<T>: 0x10 = _items, 0x18 = _size
+    uintptr_t items = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, cand + 0x10));
+    int32_t listSize = ReadMemorySafe<int32_t>(remoteCall, cand + 0x18);
+    if (validOffsetPtr(items) && listSize >= 0 && listSize < 10000) {
+        int32_t arrLen = ReadMemorySafe<int32_t>(remoteCall, items + kArray_Length);
+        if (arrLen >= listSize && arrLen <= 25000) {
+            outContainer->container = cand;
+            outContainer->isList = true;
+            outContainer->count = listSize;
+            outContainer->arrayPtr = items;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static inline uintptr_t GetEntityFromContainer(RemoteCall *remoteCall,
+                                               const FreeFireEntityContainer &c,
+                                               int32_t index) {
+    if (!remoteCall || !validOffsetPtr(c.arrayPtr) || index < 0)
+        return 0;
+
+    if (c.isList) {
+        return CleanPointer(ReadMemorySafe<uintptr_t>(
+            remoteCall, c.arrayPtr + kArray_Vector + (uint64_t)index * sizeof(uintptr_t)));
+    } else {
+        uintptr_t entryAddr = c.arrayPtr + kArray_Vector + (uint64_t)index * kEntry_Size;
+        int32_t hashCode = ReadMemorySafe<int32_t>(remoteCall, entryAddr + kEntry_HashCode);
+        if (hashCode < 0)
+            return 0;
+        return CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entryAddr + kEntry_Value));
+    }
+}
+
 static bool IsDictionaryObject(RemoteCall *remoteCall, uintptr_t object) {
     if (!validOffsetPtr(object))
         return false;
@@ -534,11 +594,11 @@ static bool IsDictionaryObject(RemoteCall *remoteCall, uintptr_t object) {
     // In Il2Cpp Dictionary<TKey, TValue>:
     // 0x18: entries (array pointer)
     // 0x20: count (int32)
-    uintptr_t entries = ReadMemorySafe<uintptr_t>(remoteCall, object + kDictionary_Entries);
+    uintptr_t entries = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, object + kDictionary_Entries));
     int32_t count = ReadMemorySafe<int32_t>(remoteCall, object + kDictionary_Count);
     if (validOffsetPtr(entries) && count >= 0 && count < 10000) {
         int32_t length = ReadMemorySafe<int32_t>(remoteCall, entries + kArray_Length);
-        if (length >= count && length <= 20000) {
+        if (length >= count && length <= 25000) {
             return true;
         }
     }
@@ -563,16 +623,16 @@ static bool FieldHoldsMatchGame(RemoteCall *remoteCall, uintptr_t value) {
 
     // Structural validation fallback:
     // Match games own CameraControllerManager at 0xD8 or replication dictionary at 0xC0
-    uintptr_t camMgr =
-        ReadMemorySafe<uintptr_t>(remoteCall, value + kMatchGame_CameraControllerManager);
+    uintptr_t camMgr = CleanPointer(
+        ReadMemorySafe<uintptr_t>(remoteCall, value + kMatchGame_CameraControllerManager));
     if (validOffsetPtr(camMgr)) {
         char camName[64] = {0};
         if (ReadIl2CppClassName(remoteCall, camMgr, camName, sizeof(camName)) &&
             strstr(camName, "Camera") != NULL)
             return true;
     }
-    uintptr_t repDict =
-        ReadMemorySafe<uintptr_t>(remoteCall, value + kMatchGame_ReplicationEntities);
+    uintptr_t repDict = CleanPointer(
+        ReadMemorySafe<uintptr_t>(remoteCall, value + kMatchGame_ReplicationEntities));
     if (validOffsetPtr(repDict) && IsDictionaryObject(remoteCall, repDict))
         return true;
 
@@ -597,15 +657,15 @@ static uintptr_t ResolveBaseGameStaticFields(RemoteCall *remoteCall, uintptr_t g
     if (!remoteCall || !validOffsetPtr(gameObject))
         return 0;
 
-    uintptr_t klass = ReadMemorySafe<uintptr_t>(remoteCall, gameObject + 0x0);
+    uintptr_t klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, gameObject + 0x0));
     for (int depth = 0; depth < 8 && validOffsetPtr(klass); ++depth) {
         char name[64] = {0};
         if (ReadKlassName(remoteCall, klass, name, sizeof(name))) {
             if (strcmp(name, "BaseGame") == 0) {
-                return ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_StaticFields);
+                return CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_StaticFields));
             }
         }
-        klass = ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Parent);
+        klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Parent));
     }
     return 0;
 }
