@@ -11,7 +11,7 @@ permissions:
 jobs:
   build:
     name: Build External-DarkSword IPA
-    runs-on: macos-14
+    runs-on: macos-15
 
     env:
       THEOS: ${{ github.workspace }}/theos
