@@ -70,6 +70,8 @@ NS_ASSUME_NONNULL_BEGIN
             matchGame:(uintptr_t)currentMatchGame
                camera:(uintptr_t *)outCamera
                camMgr:(uintptr_t *)outCamMgr;
+- (uintptr_t)resolveEntityDictionary:(RemoteCall *)remoteCall
+                           matchGame:(uintptr_t)currentMatchGame;
 - (BOOL)discoveryDue;
 - (BOOL)diagnosticsDue;
 - (void)reportDiagnostics:(NSString *)message;
@@ -881,6 +883,95 @@ NS_ASSUME_NONNULL_BEGIN
     return YES;
 }
 
+- (uintptr_t)resolveEntityDictionary:(RemoteCall *)remoteCall
+                           matchGame:(uintptr_t)currentMatchGame {
+    if (!remoteCall || !validOffsetPtr(currentMatchGame))
+        return 0;
+
+    auto getDictCount = [&](uintptr_t dict) -> int32_t {
+        if (!validOffsetPtr(dict) || !IsDictionaryObject(remoteCall, dict))
+            return -1;
+        return ReadMemorySafe<int32_t>(remoteCall, dict + kDictionary_Count);
+    };
+
+    uintptr_t bestDict = 0;
+    int32_t bestCount = 0;
+    uintptr_t firstValidDict = 0;
+
+    auto consider = [&](uintptr_t dict) {
+        if (!validOffsetPtr(dict)) return;
+        int32_t cnt = getDictCount(dict);
+        if (cnt < 0) return;
+        if (firstValidDict == 0) firstValidDict = dict;
+        if (cnt > bestCount) {
+            bestCount = cnt;
+            bestDict = dict;
+        }
+    };
+
+    // 1. BaseGame static fields via MethodInfo (0x1FB5CD28)
+    uintptr_t bgMethod = self.binaryBase + kMethodInfo_BaseGame_CCtor;
+    uintptr_t bgKlass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgMethod + kMethodInfo_Klass));
+    if (validOffsetPtr(bgKlass)) {
+        uintptr_t bgStatics = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgKlass + kIl2CppClass_StaticFields));
+        if (validOffsetPtr(bgStatics)) {
+            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgStatics + kBaseGameStatic_sAllEntities))); // 0x08
+            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgStatics + kBaseGameStatic_sTickedEntities))); // 0x00
+            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgStatics + kBaseGameStatic_sAllLEntities))); // 0x10
+        }
+    }
+
+    // 2. BaseGame static fields via parent-walk
+    uintptr_t walkStatics = ResolveBaseGameStaticFields(remoteCall, currentMatchGame);
+    if (validOffsetPtr(walkStatics)) {
+        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sAllEntities)));
+        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sTickedEntities)));
+        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sAllLEntities)));
+    }
+
+    // 3. MatchGame fields (0xC0: m_ReplicationEntitis, 0xC8: m_LReplicationEntitis)
+    consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kMatchGame_ReplicationEntities)));
+    consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + 0xC8)));
+
+    // 4. UIScene player dictionaries (Training Mode / Social Area)
+    uintptr_t uiScene = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kBaseGame_UIScene));
+    if (validOffsetPtr(uiScene)) {
+        const uint64_t sceneDictOffsets[] = {
+            0x128, 0x130, 0x140, 0x148, 0x150, 0x5D8, 0x5E0,
+            0x4C0, 0x1088, 0x20, 0x70, 0x88, 0x90, 0xA0, 0x2F8
+        };
+        for (uint64_t off : sceneDictOffsets) {
+            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, uiScene + off)));
+        }
+    }
+
+    if (bestCount > 0) {
+        return bestDict;
+    }
+
+    // 5. Scan currentMatchGame fields for player dictionary
+    if ([self discoveryDue]) {
+        for (uint64_t off = 0x10; off <= 0x300; off += sizeof(uintptr_t)) {
+            uintptr_t cand = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + off));
+            if (validOffsetPtr(cand) && IsDictionaryObject(remoteCall, cand)) {
+                consider(cand);
+            }
+        }
+
+        // 6. Scan uiScene fields for player dictionary
+        if (bestCount == 0 && validOffsetPtr(uiScene)) {
+            for (uint64_t off = 0x20; off <= 0x600; off += sizeof(uintptr_t)) {
+                uintptr_t cand = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, uiScene + off));
+                if (validOffsetPtr(cand) && IsDictionaryObject(remoteCall, cand)) {
+                    consider(cand);
+                }
+            }
+        }
+    }
+
+    return bestDict != 0 ? bestDict : firstValidDict;
+}
+
 - (void)updateSnapshot:(RemoteCall *)remoteCall {
     if (!remoteCall || self.binaryBase == 0) {
         @synchronized(self) {
@@ -1045,32 +1136,9 @@ NS_ASSUME_NONNULL_BEGIN
         remoteCall, staticFields + kGameFacadeStatic_LocalPlayerUserID);
     uint32_t hostTeamID = 0;
 
-    // 4. Read Entities from MatchGame.m_ReplicationEntitis or BaseGame.sAllEntities
-    uint64_t entitiesOffset = gFreeFireEntitiesFieldOffset != 0
-                                  ? gFreeFireEntitiesFieldOffset
-                                  : kMatchGame_ReplicationEntities;
-    uintptr_t repDict = ReadMemorySafe<uintptr_t>(
-        remoteCall, currentMatchGame + entitiesOffset);
+    // 4. Read Entities from MatchGame or BaseGame or UIScene
+    uintptr_t repDict = [self resolveEntityDictionary:remoteCall matchGame:currentMatchGame];
 
-    if (!IsDictionaryObject(remoteCall, repDict)) {
-        // Fallback to BaseGame.sAllEntities (used in Training Mode / Social Area)
-        uintptr_t allEntities = ResolveBaseGameAllEntities(remoteCall, currentMatchGame);
-        if (validOffsetPtr(allEntities)) {
-            repDict = allEntities;
-            entitiesOffset = kBaseGameStatic_sAllEntities;
-        }
-    }
-
-    if (!IsDictionaryObject(remoteCall, repDict) && [self discoveryDue]) {
-        uint64_t discovered = FindIl2CppFieldMatching(
-            remoteCall, currentMatchGame, 0x300, LooksLikePlayerDictionary);
-        if (discovered != 0) {
-            entitiesOffset = discovered;
-            gFreeFireEntitiesFieldOffset = discovered;
-            repDict = ReadMemorySafe<uintptr_t>(
-                remoteCall, currentMatchGame + discovered);
-        }
-    }
     if (!validOffsetPtr(repDict)) {
         [self reportStage:
                   [NSString stringWithFormat:@"stage 5/6: entity dictionary missing (game='%s')",
@@ -1085,16 +1153,16 @@ NS_ASSUME_NONNULL_BEGIN
         ReadMemorySafe<int32_t>(remoteCall, repDict + kDictionary_Count);
     if (dictCount <= 0 || dictCount > 10000) {
         [self reportStage:
-                  [NSString stringWithFormat:@"stage 5/6: entities=%d (waiting for targets/match)",
-                                             (int)dictCount]];
+                  [NSString stringWithFormat:@"stage 5/6: entities=%d (dict=0x%lx, waiting for targets/match)",
+                                             (int)dictCount, (unsigned long)repDict]];
         @synchronized(self) {
             self.hasValidFrame = NO;
         }
         return;
     }
 
-    uintptr_t entriesArray =
-        ReadMemorySafe<uintptr_t>(remoteCall, repDict + kDictionary_Entries);
+    uintptr_t entriesArray = CleanPointer(
+        ReadMemorySafe<uintptr_t>(remoteCall, repDict + kDictionary_Entries));
     if (!validOffsetPtr(entriesArray)) {
         [self reportStage:@"stage 5/6: dictionary entries unreadable"];
         @synchronized(self) {
@@ -1124,8 +1192,8 @@ NS_ASSUME_NONNULL_BEGIN
             if (hashCode < 0)
                 continue;
 
-            uintptr_t entity =
-                ReadMemorySafe<uintptr_t>(remoteCall, entryAddr + kEntry_Value);
+            uintptr_t entity = CleanPointer(
+                ReadMemorySafe<uintptr_t>(remoteCall, entryAddr + kEntry_Value));
             if (!validOffsetPtr(entity))
                 continue;
 
@@ -1159,8 +1227,8 @@ NS_ASSUME_NONNULL_BEGIN
         if (hashCode < 0)
             continue;
 
-        uintptr_t entity =
-            ReadMemorySafe<uintptr_t>(remoteCall, entryAddr + kEntry_Value);
+        uintptr_t entity = CleanPointer(
+            ReadMemorySafe<uintptr_t>(remoteCall, entryAddr + kEntry_Value));
         if (!validOffsetPtr(entity))
             continue;
 
@@ -1175,7 +1243,7 @@ NS_ASSUME_NONNULL_BEGIN
         }
 
         // Check if Entity is Player
-        uintptr_t klass = ReadMemorySafe<uintptr_t>(remoteCall, entity);
+        uintptr_t klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entity));
         char className[64] = {0};
         if (validOffsetPtr(klass)) {
             ReadKlassName(remoteCall, klass, className, sizeof(className));

@@ -617,18 +617,33 @@ static uintptr_t ResolveBaseGameAllEntities(RemoteCall *remoteCall, uintptr_t ga
     // Approach 1: Named walk to BaseGame
     uintptr_t staticFields = ResolveBaseGameStaticFields(remoteCall, gameObject);
     if (validOffsetPtr(staticFields)) {
-        uintptr_t allEntities = ReadMemorySafe<uintptr_t>(remoteCall, staticFields + kBaseGameStatic_sAllEntities);
-        if (validOffsetPtr(allEntities) && IsDictionaryObject(remoteCall, allEntities))
-            return allEntities;
+        const uint64_t slots[] = {
+            kBaseGameStatic_sAllEntities,
+            kBaseGameStatic_sTickedEntities,
+            kBaseGameStatic_sAllLEntities
+        };
+        uintptr_t fallbackDict = 0;
+        for (uint64_t slot : slots) {
+            uintptr_t dict = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, staticFields + slot));
+            if (validOffsetPtr(dict) && IsDictionaryObject(remoteCall, dict)) {
+                int32_t cnt = ReadMemorySafe<int32_t>(remoteCall, dict + kDictionary_Count);
+                if (cnt > 0)
+                    return dict;
+                if (fallbackDict == 0)
+                    fallbackDict = dict;
+            }
+        }
+        if (fallbackDict != 0)
+            return fallbackDict;
     }
 
     // Approach 2: Structural walk up parent chain of gameObject
-    uintptr_t klass = ReadMemorySafe<uintptr_t>(remoteCall, gameObject + 0x0);
+    uintptr_t klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, gameObject + 0x0));
     for (int depth = 0; depth < 6 && validOffsetPtr(klass); ++depth) {
-        uintptr_t sf = ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_StaticFields);
+        uintptr_t sf = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_StaticFields));
         if (validOffsetPtr(sf)) {
             for (uint64_t off = 0x0; off <= 0x18; off += sizeof(uintptr_t)) {
-                uintptr_t dict = ReadMemorySafe<uintptr_t>(remoteCall, sf + off);
+                uintptr_t dict = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, sf + off));
                 if (validOffsetPtr(dict) && IsDictionaryObject(remoteCall, dict)) {
                     int32_t cnt = ReadMemorySafe<int32_t>(remoteCall, dict + kDictionary_Count);
                     if (cnt > 0) {
@@ -637,7 +652,7 @@ static uintptr_t ResolveBaseGameAllEntities(RemoteCall *remoteCall, uintptr_t ga
                 }
             }
         }
-        klass = ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Parent);
+        klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Parent));
     }
 
     return 0;
@@ -679,8 +694,8 @@ static bool LooksLikePlayerDictionary(RemoteCall *remoteCall, uintptr_t dict) {
     if (count <= 0 || count > 10000)
         return false;
 
-    uintptr_t entries =
-        ReadMemorySafe<uintptr_t>(remoteCall, dict + kDictionary_Entries);
+    uintptr_t entries = CleanPointer(
+        ReadMemorySafe<uintptr_t>(remoteCall, dict + kDictionary_Entries));
     if (!validOffsetPtr(entries))
         return false;
 
@@ -698,16 +713,22 @@ static bool LooksLikePlayerDictionary(RemoteCall *remoteCall, uintptr_t dict) {
         if (hashCode < 0)
             continue;
 
-        uintptr_t value =
-            ReadMemorySafe<uintptr_t>(remoteCall, entryAddr + kEntry_Value);
-        if (validOffsetPtr(value) &&
-            (IsSubclassOf(remoteCall, value, "Player") ||
-             IsSubclassOf(remoteCall, value, "Entity") ||
-             IsSubclassOf(remoteCall, value, "AttackableEntity") ||
-             Il2CppClassNameContains(remoteCall, value, "Player") ||
-             Il2CppClassNameContains(remoteCall, value, "Entity") ||
-             Il2CppClassNameContains(remoteCall, value, "Target") ||
-             Il2CppClassNameContains(remoteCall, value, "Dummy")))
+        uintptr_t value = CleanPointer(
+            ReadMemorySafe<uintptr_t>(remoteCall, entryAddr + kEntry_Value));
+        if (!validOffsetPtr(value))
+            continue;
+
+        if (IsSubclassOf(remoteCall, value, "Player") ||
+            IsSubclassOf(remoteCall, value, "Entity") ||
+            IsSubclassOf(remoteCall, value, "AttackableEntity") ||
+            Il2CppClassNameContains(remoteCall, value, "Player") ||
+            Il2CppClassNameContains(remoteCall, value, "Entity") ||
+            Il2CppClassNameContains(remoteCall, value, "Target") ||
+            Il2CppClassNameContains(remoteCall, value, "Dummy"))
+            return true;
+
+        Vector3 testPos = Vector3::zero();
+        if (ReadEntityPosition(remoteCall, value, &testPos))
             return true;
     }
 
