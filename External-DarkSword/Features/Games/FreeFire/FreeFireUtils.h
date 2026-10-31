@@ -374,53 +374,64 @@ static bool gGameFacadeNameScanned = false;
 
 static bool ReadKlassName(RemoteCall *remoteCall, uintptr_t klass,
                           char *out, size_t capacity) {
-    klass = CleanPointer(klass);
-    if (!remoteCall || !validOffsetPtr(klass) || !out || capacity == 0)
+    if (!remoteCall || !out || capacity == 0)
         return false;
 
     out[0] = '\0';
+    uintptr_t raw = CleanPointer(klass);
+    if (!validOffsetPtr(raw))
+        return false;
 
-    // Scan candidate offsets for class name.
-    // In Il2CppClass, name is at 0x10. We check 0x10 first, then 0x18, 0x20, 0x28, 0x30, 0x08.
-    const uint64_t candidateOffsets[] = { 0x10, 0x18, 0x20, 0x28, 0x30, 0x08 };
-    for (int i = 0; i < 6; ++i) {
-        uint64_t off = candidateOffsets[i];
-        uintptr_t namePtr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + off));
-        if (!validOffsetPtr(namePtr))
+    // In 64-bit iOS, Il2CppClass pointers may carry low tag bits (e.g. 0x4).
+    // We try both aligned (raw & ~7ULL) and raw.
+    const uintptr_t candidates[2] = { raw & ~7ULL, raw };
+    for (int k = 0; k < 2; ++k) {
+        uintptr_t kAddr = candidates[k];
+        if (!validOffsetPtr(kAddr))
             continue;
 
-        char buffer[64] = {0};
-        if (![remoteCall remoteRead:namePtr to:buffer size:sizeof(buffer) - 1])
-            continue;
+        // Scan candidate offsets for class name.
+        // In Il2CppClass, name is at 0x10. We check 0x10 first, then 0x18, 0x20, 0x28, 0x30, 0x08.
+        const uint64_t candidateOffsets[] = { 0x10, 0x18, 0x20, 0x28, 0x30, 0x08 };
+        for (int i = 0; i < 6; ++i) {
+            uint64_t off = candidateOffsets[i];
+            uintptr_t namePtr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, kAddr + off));
+            if (!validOffsetPtr(namePtr))
+                continue;
 
-        size_t length = 0;
-        while (length < sizeof(buffer) && buffer[length] != '\0') {
-            unsigned char c = (unsigned char)buffer[length];
-            if (c < 0x20 || c > 0x7E)
-                break;
-            ++length;
+            char buffer[64] = {0};
+            if (![remoteCall remoteRead:namePtr to:buffer size:sizeof(buffer) - 1])
+                continue;
+
+            size_t length = 0;
+            while (length < sizeof(buffer) && buffer[length] != '\0') {
+                unsigned char c = (unsigned char)buffer[length];
+                if (c < 0x20 || c > 0x7E)
+                    break;
+                ++length;
+            }
+
+            if (length == 0 || length >= capacity || buffer[length] != '\0')
+                continue;
+
+            // Skip image/assembly names
+            if (strcmp(buffer, "Assembly-CSharp") == 0 ||
+                strstr(buffer, "Assembly-CSharp") != NULL ||
+                strstr(buffer, ".dll") != NULL) {
+                continue;
+            }
+
+            // Skip common top-level namespaces
+            if (strcmp(buffer, "COW") == 0 ||
+                strcmp(buffer, "UnityEngine") == 0 ||
+                strcmp(buffer, "System") == 0) {
+                continue;
+            }
+
+            memcpy(out, buffer, length);
+            out[length] = '\0';
+            return true;
         }
-
-        if (length == 0 || length >= capacity || buffer[length] != '\0')
-            continue;
-
-        // Skip image/assembly names
-        if (strcmp(buffer, "Assembly-CSharp") == 0 ||
-            strstr(buffer, "Assembly-CSharp") != NULL ||
-            strstr(buffer, ".dll") != NULL) {
-            continue;
-        }
-
-        // Skip common top-level namespaces
-        if (strcmp(buffer, "COW") == 0 ||
-            strcmp(buffer, "UnityEngine") == 0 ||
-            strcmp(buffer, "System") == 0) {
-            continue;
-        }
-
-        memcpy(out, buffer, length);
-        out[length] = '\0';
-        return true;
     }
 
     return false;
@@ -436,11 +447,17 @@ static bool ReadIl2CppClassName(RemoteCall *remoteCall, uintptr_t object,
     if (!validOffsetPtr(object))
         return false;
 
-    uintptr_t klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, object));
-    if (!validOffsetPtr(klass))
-        return false;
+    // Check klass at +0x00
+    uintptr_t klass0 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, object + 0x0));
+    if (validOffsetPtr(klass0) && ReadKlassName(remoteCall, klass0, out, capacity))
+        return true;
 
-    return ReadKlassName(remoteCall, klass, out, capacity);
+    // Check klass at +0x08 (in case object has native vtable at 0x00)
+    uintptr_t klass8 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, object + 0x8));
+    if (validOffsetPtr(klass8) && ReadKlassName(remoteCall, klass8, out, capacity))
+        return true;
+
+    return false;
 }
 
 static bool FreeFireStaticBlockHasGameSlot(RemoteCall *remoteCall, uintptr_t block) {
@@ -492,15 +509,24 @@ static bool IsSubclassOf(RemoteCall *remoteCall, uintptr_t object,
     if (!remoteCall || !validOffsetPtr(object) || !targetName)
         return false;
 
-    uintptr_t klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, object));
-    for (int depth = 0; depth < 10 && validOffsetPtr(klass); ++depth) {
-        char buffer[64] = {0};
-        if (ReadKlassName(remoteCall, klass, buffer, sizeof(buffer))) {
-            if (strstr(buffer, targetName) != NULL) {
-                return true;
+    const uintptr_t klasses[2] = {
+        CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, object + 0x0)),
+        CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, object + 0x8))
+    };
+
+    for (int k = 0; k < 2; ++k) {
+        uintptr_t rootKlass = klasses[k];
+        if (!validOffsetPtr(rootKlass)) continue;
+        uintptr_t klass = rootKlass & ~7ULL;
+        for (int depth = 0; depth < 10 && validOffsetPtr(klass); ++depth) {
+            char buffer[64] = {0};
+            if (ReadKlassName(remoteCall, klass, buffer, sizeof(buffer))) {
+                if (strstr(buffer, targetName) != NULL) {
+                    return true;
+                }
             }
+            klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Parent)) & ~7ULL;
         }
-        klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Parent));
     }
     return false;
 }
@@ -766,15 +792,24 @@ static uintptr_t ResolveBaseGameStaticFields(RemoteCall *remoteCall, uintptr_t g
     if (!remoteCall || !validOffsetPtr(gameObject))
         return 0;
 
-    uintptr_t klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, gameObject + 0x0));
-    for (int depth = 0; depth < 8 && validOffsetPtr(klass); ++depth) {
-        char name[64] = {0};
-        if (ReadKlassName(remoteCall, klass, name, sizeof(name))) {
-            if (strcmp(name, "BaseGame") == 0) {
-                return CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_StaticFields));
+    const uintptr_t klasses[2] = {
+        CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, gameObject + 0x0)),
+        CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, gameObject + 0x8))
+    };
+
+    for (int k = 0; k < 2; ++k) {
+        uintptr_t rootKlass = klasses[k];
+        if (!validOffsetPtr(rootKlass)) continue;
+        uintptr_t klass = rootKlass & ~7ULL;
+        for (int depth = 0; depth < 8 && validOffsetPtr(klass); ++depth) {
+            char name[64] = {0};
+            if (ReadKlassName(remoteCall, klass, name, sizeof(name))) {
+                if (strcmp(name, "BaseGame") == 0 || strcmp(name, "COWGameBase") == 0) {
+                    return CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_StaticFields));
+                }
             }
+            klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Parent)) & ~7ULL;
         }
-        klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Parent));
     }
     return 0;
 }
@@ -807,7 +842,7 @@ static uintptr_t ResolveBaseGameAllEntities(RemoteCall *remoteCall, uintptr_t ga
     }
 
     // Approach 2: Structural walk up parent chain of gameObject
-    uintptr_t klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, gameObject + 0x0));
+    uintptr_t klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, gameObject + 0x0)) & ~7ULL;
     for (int depth = 0; depth < 6 && validOffsetPtr(klass); ++depth) {
         uintptr_t sf = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_StaticFields));
         if (validOffsetPtr(sf)) {
@@ -821,7 +856,7 @@ static uintptr_t ResolveBaseGameAllEntities(RemoteCall *remoteCall, uintptr_t ga
                 }
             }
         }
-        klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Parent));
+        klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Parent)) & ~7ULL;
     }
 
     return 0;

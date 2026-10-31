@@ -1219,18 +1219,21 @@ NS_ASSUME_NONNULL_BEGIN
         ReadIl2CppClassName(remoteCall, currentMatchGame, matchGameClass,
                             sizeof(matchGameClass));
         if (matchGameClass[0] == '\0') {
-            // Debug: log raw klass pointer to help diagnose PAC / mask issues
+            // Debug: log clean klass pointer and string at nameAtKlass
             uintptr_t rawKlass = ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame);
-            uintptr_t cleanKlass = CleanPointer(rawKlass);
+            uintptr_t cleanKlass = CleanPointer(rawKlass) & ~7ULL;
             uintptr_t nameAtKlass = 0;
             if (validOffsetPtr(cleanKlass)) {
-                nameAtKlass = ReadMemorySafe<uintptr_t>(remoteCall, cleanKlass + 0x10);
+                nameAtKlass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, cleanKlass + 0x10));
+            }
+            char debugName[32] = {0};
+            if (validOffsetPtr(nameAtKlass)) {
+                [remoteCall remoteRead:nameAtKlass to:debugName size:sizeof(debugName) - 1];
             }
             snprintf(matchGameClass, sizeof(matchGameClass),
-                     "?k=0x%lx/0x%lx,n=0x%lx",
-                     (unsigned long)rawKlass,
+                     "?k=0x%lx,n='%s'",
                      (unsigned long)cleanKlass,
-                     (unsigned long)nameAtKlass);
+                     debugName);
         }
     }
 
@@ -1335,14 +1338,11 @@ NS_ASSUME_NONNULL_BEGIN
                 remoteCall, diagBgStatics + kBaseGameStatic_sAllEntities));
         }
 
-        // Training target diagnostics on ctxMatchGame
-        int ctxQ468 = -1, ctxQ470 = -1, ctxL478 = -1, ctxL4B8 = -1;
-        if (validOffsetPtr(ctxMatchGame)) {
-            ctxQ468 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + 0x468));
-            ctxQ470 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + 0x470));
-            ctxL478 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + 0x478));
-            ctxL4B8 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + 0x4B8));
-        }
+        // Training target diagnostics on currentMatchGame
+        int cgQ468 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + 0x468));
+        int cgQ470 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + 0x470));
+        int cgL478 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + 0x478));
+        int cgL4B8 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + 0x4B8));
 
         int diagP128 = -1, diagP130 = -1, diagP158 = -1, diagP168 = -1, diagP2A0 = -1;
         if (validOffsetPtr(diagMatchObj)) {
@@ -1355,13 +1355,13 @@ NS_ASSUME_NONNULL_BEGIN
 
         snprintf(diagBuf, sizeof(diagBuf),
                  "ctx=0x%lx match=0x%lx rep=0x%lx allEnt=0x%lx(%d) "
-                 "ctxQ468=%d ctxQ470=%d ctxL478=%d ctxL4B8=%d "
+                 "cg468=%d cg470=%d cg478=%d cg4B8=%d "
                  "p128=%d p130=%d p158=%d",
                  (unsigned long)gameContext, (unsigned long)diagMatchObj,
                  (unsigned long)diagRepDict,
                  (unsigned long)diagAllEnt,
                  containerCount(diagAllEnt),
-                 ctxQ468, ctxQ470, ctxL478, ctxL4B8,
+                 cgQ468, cgQ470, cgL478, cgL4B8,
                  diagP128, diagP130, diagP158);
     }
 
