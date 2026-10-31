@@ -704,7 +704,7 @@ NS_ASSUME_NONNULL_BEGIN
             // Check UI3DCamera at 0x170
             uintptr_t candCam = ReadMemorySafe<uintptr_t>(
                 remoteCall, uiScene + kUIFrontEndScene_UI3DCamera);
-            if (validOffsetPtr(candCam) && FieldHoldsCamera(remoteCall, candCam)) {
+            if (validOffsetPtr(candCam)) {
                 float testVP[16] = {}, testView[16] = {};
                 if (ReadCameraVPAndWorldMatrix(remoteCall, candCam, testVP, testView)) {
                     camera = candCam;
@@ -717,7 +717,7 @@ NS_ASSUME_NONNULL_BEGIN
                 if (validOffsetPtr(gyro)) {
                     uintptr_t gyroCam = ReadMemorySafe<uintptr_t>(
                         remoteCall, gyro + kGyroCameraController_Cam1);
-                    if (validOffsetPtr(gyroCam) && FieldHoldsCamera(remoteCall, gyroCam)) {
+                    if (validOffsetPtr(gyroCam)) {
                         float testVP[16] = {}, testView[16] = {};
                         if (ReadCameraVPAndWorldMatrix(remoteCall, gyroCam, testVP, testView)) {
                             camera = gyroCam;
@@ -725,11 +725,11 @@ NS_ASSUME_NONNULL_BEGIN
                     }
                 }
             }
-            // Scan uiScene fields (0x120 to 0x220) for any Camera with a valid VP matrix
+            // Scan uiScene fields (0x100 to 0x250) for any pointer with a valid VP matrix
             if (!validOffsetPtr(camera)) {
-                for (uint64_t off = 0x120; off <= 0x220; off += sizeof(uintptr_t)) {
+                for (uint64_t off = 0x100; off <= 0x250; off += sizeof(uintptr_t)) {
                     uintptr_t ptr = ReadMemorySafe<uintptr_t>(remoteCall, uiScene + off);
-                    if (validOffsetPtr(ptr) && FieldHoldsCamera(remoteCall, ptr)) {
+                    if (validOffsetPtr(ptr)) {
                         float testVP[16] = {}, testView[16] = {};
                         if (ReadCameraVPAndWorldMatrix(remoteCall, ptr, testVP, testView)) {
                             camera = ptr;
@@ -741,11 +741,11 @@ NS_ASSUME_NONNULL_BEGIN
         }
     }
 
-    // Tertiary path: Scan currentMatchGame fields for any Camera with a valid VP matrix
+    // Tertiary path: Scan currentMatchGame fields for any pointer with a valid VP matrix
     if (!validOffsetPtr(camera)) {
         for (uint64_t off = 0x10; off <= 0x200; off += sizeof(uintptr_t)) {
             uintptr_t ptr = ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + off);
-            if (validOffsetPtr(ptr) && FieldHoldsCamera(remoteCall, ptr)) {
+            if (validOffsetPtr(ptr)) {
                 float testVP[16] = {}, testView[16] = {};
                 if (ReadCameraVPAndWorldMatrix(remoteCall, ptr, testVP, testView)) {
                     camera = ptr;
@@ -811,6 +811,13 @@ NS_ASSUME_NONNULL_BEGIN
         // Training Mode / Social Area / Custom Mode
         currentMatchGame = cg;
         matchGameOffset = kGameFacadeStatic_CurrentGame;
+    } else if (validOffsetPtr(cg)) {
+        // GameFacade.CurrentGame fallback: in Free Fire, offset 0x0 is guaranteed to be the active BaseGame
+        currentMatchGame = cg;
+        matchGameOffset = kGameFacadeStatic_CurrentGame;
+    } else if (validOffsetPtr(mg)) {
+        currentMatchGame = mg;
+        matchGameOffset = kGameFacadeStatic_CurrentMatchGame;
     }
 
     // Check previously discovered offset
@@ -1047,27 +1054,36 @@ NS_ASSUME_NONNULL_BEGIN
 
         // Check if Entity is Player
         uintptr_t klass = ReadMemorySafe<uintptr_t>(remoteCall, entity);
-        if (!validOffsetPtr(klass))
-            continue;
-
         char className[64] = {0};
-        if (!ReadKlassName(remoteCall, klass, className, sizeof(className)))
-            continue;
+        if (validOffsetPtr(klass)) {
+            ReadKlassName(remoteCall, klass, className, sizeof(className));
+        }
 
-        if (sampleClasses.size() < 96 &&
+        if (className[0] != '\0' && sampleClasses.size() < 96 &&
             sampleClasses.find(className) == std::string::npos) {
             if (!sampleClasses.empty())
                 sampleClasses += ",";
             sampleClasses += className;
         }
 
-        BOOL isTargetOrPlayer = (strncmp(className, "Player", 6) == 0 ||
-                                 strstr(className, "Player") != NULL ||
-                                 strstr(className, "Target") != NULL ||
-                                 strstr(className, "Dummy") != NULL ||
-                                 strstr(className, "AIPawn") != NULL ||
-                                 IsSubclassOf(remoteCall, entity, "Player") ||
-                                 IsSubclassOf(remoteCall, entity, "AttackableEntity"));
+        BOOL isTargetOrPlayer = NO;
+        if (className[0] != '\0') {
+            isTargetOrPlayer = (strncmp(className, "Player", 6) == 0 ||
+                                strstr(className, "Player") != NULL ||
+                                strstr(className, "Target") != NULL ||
+                                strstr(className, "Dummy") != NULL ||
+                                strstr(className, "AIPawn") != NULL ||
+                                IsSubclassOf(remoteCall, entity, "Player") ||
+                                IsSubclassOf(remoteCall, entity, "AttackableEntity"));
+        } else {
+            // Structural fallback: check if entity has a valid 3D position
+            Vector3 testPos = Vector3::zero();
+            if (ReadEntityPosition(remoteCall, entity, &testPos)) {
+                isTargetOrPlayer = YES;
+                snprintf(className, sizeof(className), "Target_%u", (unsigned int)(entity & 0xFFFF));
+            }
+        }
+
         if (!isTargetOrPlayer) {
             ++nonPlayerCount;
             continue;

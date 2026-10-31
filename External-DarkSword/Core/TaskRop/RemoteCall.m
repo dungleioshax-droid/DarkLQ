@@ -1385,6 +1385,7 @@ replace_entry:
 - (BOOL)remoteRead:(uint64_t)src to:(void *)dst size:(uint64_t)size {
     if (!src || !dst || !size)
         return false;
+    src = nativestrip(src);
     NSRecursiveLock *lock = [self executionLock];
     [lock lock];
     @try {

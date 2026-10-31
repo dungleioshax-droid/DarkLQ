@@ -16,12 +16,18 @@
 extern "C" {
 #endif
 
+static inline uintptr_t CleanPointer(uintptr_t p) {
+    return p & 0x7fffffffffULL;
+}
+
 static inline bool checkPointer64bits(uintptr_t addr) {
-    return addr != 0 && (addr & 7) == 0;
+    uintptr_t clean = CleanPointer(addr);
+    return clean != 0 && (clean & 7) == 0;
 }
 
 static inline bool validOffsetPtr(uintptr_t p) {
-    return p > 0x10000 && p < 0x80000000000ULL;
+    uintptr_t clean = CleanPointer(p);
+    return clean > 0x10000 && clean < 0x80000000000ULL;
 }
 
 static inline bool checkValidPointer64bits(uintptr_t addr) {
@@ -55,12 +61,13 @@ static inline T ReadMemorySafe(RemoteCall *remoteCall, uintptr_t addr,
     if (!remoteCall || addr == 0) {
         return defaultValue;
     }
-    if (!isAlignedAddr<T>(addr)) {
+    uintptr_t cleanAddr = CleanPointer(addr);
+    if (!isAlignedAddr<T>(cleanAddr)) {
         return defaultValue;
     }
 
     T value{};
-    if (![remoteCall remoteRead:addr to:&value size:sizeof(T)]) {
+    if (![remoteCall remoteRead:cleanAddr to:&value size:sizeof(T)]) {
         return defaultValue;
     }
     return value;

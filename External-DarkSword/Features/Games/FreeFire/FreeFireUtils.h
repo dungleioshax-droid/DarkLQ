@@ -518,7 +518,24 @@ static uint64_t gFreeFireCameraFieldOffset = 0;
 static uint64_t gFreeFireEntitiesFieldOffset = 0;
 
 static bool IsDictionaryObject(RemoteCall *remoteCall, uintptr_t object) {
-    return Il2CppClassNameContains(remoteCall, object, "Dictionary");
+    if (!validOffsetPtr(object))
+        return false;
+    if (Il2CppClassNameContains(remoteCall, object, "Dictionary"))
+        return true;
+
+    // Structural dictionary validation fallback:
+    // In Il2Cpp Dictionary<TKey, TValue>:
+    // 0x18: entries (array pointer)
+    // 0x20: count (int32)
+    uintptr_t entries = ReadMemorySafe<uintptr_t>(remoteCall, object + kDictionary_Entries);
+    int32_t count = ReadMemorySafe<int32_t>(remoteCall, object + kDictionary_Count);
+    if (validOffsetPtr(entries) && count >= 0 && count < 10000) {
+        int32_t length = ReadMemorySafe<int32_t>(remoteCall, entries + kArray_Length);
+        if (length >= count && length <= 20000) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static bool FieldHoldsMatchGame(RemoteCall *remoteCall, uintptr_t value) {
@@ -587,21 +604,35 @@ static uintptr_t ResolveBaseGameStaticFields(RemoteCall *remoteCall, uintptr_t g
 }
 
 static uintptr_t ResolveBaseGameAllEntities(RemoteCall *remoteCall, uintptr_t gameObject) {
-    uintptr_t staticFields = ResolveBaseGameStaticFields(remoteCall, gameObject);
-    if (!validOffsetPtr(staticFields))
+    if (!remoteCall || !validOffsetPtr(gameObject))
         return 0;
 
-    // Check sAllEntities at offset 0x08
-    uintptr_t allEntities = ReadMemorySafe<uintptr_t>(remoteCall, staticFields + kBaseGameStatic_sAllEntities);
-    if (validOffsetPtr(allEntities) && IsDictionaryObject(remoteCall, allEntities))
-        return allEntities;
-
-    // Fallback: check 0x00 and 0x10
-    for (uint64_t off = 0x0; off <= 0x18; off += sizeof(uintptr_t)) {
-        uintptr_t dict = ReadMemorySafe<uintptr_t>(remoteCall, staticFields + off);
-        if (validOffsetPtr(dict) && IsDictionaryObject(remoteCall, dict))
-            return dict;
+    // Approach 1: Named walk to BaseGame
+    uintptr_t staticFields = ResolveBaseGameStaticFields(remoteCall, gameObject);
+    if (validOffsetPtr(staticFields)) {
+        uintptr_t allEntities = ReadMemorySafe<uintptr_t>(remoteCall, staticFields + kBaseGameStatic_sAllEntities);
+        if (validOffsetPtr(allEntities) && IsDictionaryObject(remoteCall, allEntities))
+            return allEntities;
     }
+
+    // Approach 2: Structural walk up parent chain of gameObject
+    uintptr_t klass = ReadMemorySafe<uintptr_t>(remoteCall, gameObject + 0x0);
+    for (int depth = 0; depth < 6 && validOffsetPtr(klass); ++depth) {
+        uintptr_t sf = ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_StaticFields);
+        if (validOffsetPtr(sf)) {
+            for (uint64_t off = 0x0; off <= 0x18; off += sizeof(uintptr_t)) {
+                uintptr_t dict = ReadMemorySafe<uintptr_t>(remoteCall, sf + off);
+                if (validOffsetPtr(dict) && IsDictionaryObject(remoteCall, dict)) {
+                    int32_t cnt = ReadMemorySafe<int32_t>(remoteCall, dict + kDictionary_Count);
+                    if (cnt > 0) {
+                        return dict;
+                    }
+                }
+            }
+        }
+        klass = ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Parent);
+    }
+
     return 0;
 }
 
