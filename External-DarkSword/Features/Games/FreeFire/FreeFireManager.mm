@@ -633,7 +633,7 @@ NS_ASSUME_NONNULL_BEGIN
     [self.remoteWebViewOverlay updateOverlayTargets:overlayTargets];
 }
 
-// Resolves the camera controller manager and its main camera.
+// Resolves the camera controller manager and its main camera (100% PURE MEMORY READS).
 - (BOOL)resolveCamera:(RemoteCall *)remoteCall
             matchGame:(uintptr_t)currentMatchGame
                camera:(uintptr_t *)outCamera
@@ -659,29 +659,70 @@ NS_ASSUME_NONNULL_BEGIN
     uintptr_t camera = 0;
     uintptr_t camMgr = 0;
 
-    // Strategy 1: CameraControllerManager in currentMatchGame (Standard Match: BR / CS)
-    uint64_t camMgrOffset = gFreeFireCameraManagerFieldOffset != 0
-                                ? gFreeFireCameraManagerFieldOffset
-                                : kMatchGame_CameraControllerManager;
-    camMgr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + camMgrOffset));
-    if (validOffsetPtr(camMgr)) {
-        uint64_t cameraOffset = gFreeFireCameraFieldOffset != 0
-                                    ? gFreeFireCameraFieldOffset
-                                    : kCameraControllerManager_MainCamera;
-        uintptr_t candCam = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, camMgr + cameraOffset));
-        if (validOffsetPtr(candCam)) {
+    // Strategy 1: FrontEndGame.postEffect (Training Ground / Social Area)
+    uintptr_t postEffect = CleanPointer(ReadMemorySafe<uintptr_t>(
+        remoteCall, currentMatchGame + kFrontEndGame_PostEffect));
+    if (validOffsetPtr(postEffect)) {
+        uintptr_t ownerCam = CleanPointer(ReadMemorySafe<uintptr_t>(
+            remoteCall, postEffect + kPostEffectManager_OwnerCamera));
+        if (validOffsetPtr(ownerCam)) {
             float testVP[16] = {}, testView[16] = {};
-            if (ReadCameraVPAndWorldMatrix(remoteCall, candCam, testVP, testView)) {
-                camera = candCam;
+            if (ReadCameraVPAndWorldMatrix(remoteCall, ownerCam, testVP, testView)) {
+                camera = ownerCam;
             }
         }
         if (!validOffsetPtr(camera)) {
-            candCam = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, camMgr + kCameraControllerManager_SubCamera));
+            uintptr_t extraCams = CleanPointer(ReadMemorySafe<uintptr_t>(
+                remoteCall, postEffect + kPostEffectManager_ExtraCameras));
+            if (validOffsetPtr(extraCams)) {
+                uintptr_t items = CleanPointer(ReadMemorySafe<uintptr_t>(
+                    remoteCall, extraCams + 0x10));
+                int32_t count = ReadMemorySafe<int32_t>(remoteCall, extraCams + 0x18);
+                if (validOffsetPtr(items) && count > 0 && count < 20) {
+                    for (int i = 0; i < count; ++i) {
+                        uintptr_t ec = CleanPointer(ReadMemorySafe<uintptr_t>(
+                            remoteCall, items + 0x20 + (uint64_t)i * sizeof(uintptr_t)));
+                        if (validOffsetPtr(ec)) {
+                            float testVP[16] = {}, testView[16] = {};
+                            if (ReadCameraVPAndWorldMatrix(remoteCall, ec, testVP, testView)) {
+                                camera = ec;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Strategy 2: CameraControllerManager in currentMatchGame (Standard Match: BR / CS)
+    if (!validOffsetPtr(camera)) {
+        uint64_t camMgrOffset = gFreeFireCameraManagerFieldOffset != 0
+                                    ? gFreeFireCameraManagerFieldOffset
+                                    : kMatchGame_CameraControllerManager;
+        camMgr = CleanPointer(ReadMemorySafe<uintptr_t>(
+            remoteCall, currentMatchGame + camMgrOffset));
+        if (validOffsetPtr(camMgr)) {
+            uint64_t cameraOffset = gFreeFireCameraFieldOffset != 0
+                                        ? gFreeFireCameraFieldOffset
+                                        : kCameraControllerManager_MainCamera;
+            uintptr_t candCam = CleanPointer(ReadMemorySafe<uintptr_t>(
+                remoteCall, camMgr + cameraOffset));
             if (validOffsetPtr(candCam)) {
                 float testVP[16] = {}, testView[16] = {};
                 if (ReadCameraVPAndWorldMatrix(remoteCall, candCam, testVP, testView)) {
                     camera = candCam;
-                    gFreeFireCameraFieldOffset = kCameraControllerManager_SubCamera;
+                }
+            }
+            if (!validOffsetPtr(camera)) {
+                candCam = CleanPointer(ReadMemorySafe<uintptr_t>(
+                    remoteCall, camMgr + kCameraControllerManager_SubCamera));
+                if (validOffsetPtr(candCam)) {
+                    float testVP[16] = {}, testView[16] = {};
+                    if (ReadCameraVPAndWorldMatrix(remoteCall, candCam, testVP, testView)) {
+                        camera = candCam;
+                        gFreeFireCameraFieldOffset = kCameraControllerManager_SubCamera;
+                    }
                 }
             }
         }
@@ -692,12 +733,13 @@ NS_ASSUME_NONNULL_BEGIN
         uint64_t discoveredMgr = FindIl2CppFieldMatching(
             remoteCall, currentMatchGame, 0x300, LooksLikeCameraManager);
         if (discoveredMgr != 0) {
-            camMgrOffset = discoveredMgr;
-            gFreeFireCameraManagerFieldOffset = discoveredMgr;
-            camMgr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + discoveredMgr));
+            camMgr = CleanPointer(ReadMemorySafe<uintptr_t>(
+                remoteCall, currentMatchGame + discoveredMgr));
             if (validOffsetPtr(camMgr)) {
+                gFreeFireCameraManagerFieldOffset = discoveredMgr;
                 for (uint64_t cOff = 0x20; cOff <= 0x80; cOff += sizeof(uintptr_t)) {
-                    uintptr_t candCam = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, camMgr + cOff));
+                    uintptr_t candCam = CleanPointer(ReadMemorySafe<uintptr_t>(
+                        remoteCall, camMgr + cOff));
                     if (validOffsetPtr(candCam)) {
                         float testVP[16] = {}, testView[16] = {};
                         if (ReadCameraVPAndWorldMatrix(remoteCall, candCam, testVP, testView)) {
@@ -711,58 +753,42 @@ NS_ASSUME_NONNULL_BEGIN
         }
     }
 
-    // Strategy 2: Call Camera.get_main() via RemoteCall (Unity standard MainCamera)
+    // Strategy 3: UICamera static fields via MethodInfo (100% PURE MEMORY READ)
     if (!validOffsetPtr(camera) && [self discoveryDue]) {
-        uint64_t mainCam = [remoteCall doRemoteCallStableWithTimeout:2
-                                                       functionName:(char *)"Camera_get_main"
-                                                    functionPointer:(void *)(self.binaryBase + kCamera_GetMain)
-                                                               args:NULL
-                                                           argCount:0];
-        mainCam = CleanPointer(mainCam);
-        if (validOffsetPtr(mainCam)) {
-            float testVP[16] = {}, testView[16] = {};
-            if (ReadCameraVPAndWorldMatrix(remoteCall, mainCam, testVP, testView)) {
-                camera = mainCam;
-                LOG(@"[FreeFire] Discovered camera via Camera.get_main(): 0x%lx", (unsigned long)mainCam);
+        uintptr_t methodInfo = self.binaryBase + kMethodInfo_UICamera_CCtor;
+        uintptr_t klass = CleanPointer(ReadMemorySafe<uintptr_t>(
+            remoteCall, methodInfo + kMethodInfo_Klass));
+        if (validOffsetPtr(klass)) {
+            uintptr_t staticFields = CleanPointer(ReadMemorySafe<uintptr_t>(
+                remoteCall, klass + kIl2CppClass_StaticFields));
+            if (validOffsetPtr(staticFields)) {
+                uintptr_t curCam = CleanPointer(ReadMemorySafe<uintptr_t>(
+                    remoteCall, staticFields + kUICameraStatic_CurrentCamera));
+                if (validOffsetPtr(curCam)) {
+                    float testVP[16] = {}, testView[16] = {};
+                    if (ReadCameraVPAndWorldMatrix(remoteCall, curCam, testVP, testView)) {
+                        camera = curCam;
+                    }
+                }
+                if (!validOffsetPtr(camera)) {
+                    uintptr_t uic = CleanPointer(ReadMemorySafe<uintptr_t>(
+                        remoteCall, staticFields + kUICameraStatic_Current));
+                    if (validOffsetPtr(uic)) {
+                        uintptr_t mCam = CleanPointer(ReadMemorySafe<uintptr_t>(
+                            remoteCall, uic + kUICamera_mCam));
+                        if (validOffsetPtr(mCam)) {
+                            float testVP[16] = {}, testView[16] = {};
+                            if (ReadCameraVPAndWorldMatrix(remoteCall, mCam, testVP, testView)) {
+                                camera = mCam;
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 
-    // Strategy 3: Call UICamera.get_mainCamera() via RemoteCall (RVA 0x15431B0)
-    if (!validOffsetPtr(camera) && [self discoveryDue]) {
-        uint64_t uiMainCam = [remoteCall doRemoteCallStableWithTimeout:2
-                                                          functionName:(char *)"UICamera_get_mainCamera"
-                                                       functionPointer:(void *)(self.binaryBase + 0x15431B0)
-                                                                  args:NULL
-                                                              argCount:0];
-        uiMainCam = CleanPointer(uiMainCam);
-        if (validOffsetPtr(uiMainCam)) {
-            float testVP[16] = {}, testView[16] = {};
-            if (ReadCameraVPAndWorldMatrix(remoteCall, uiMainCam, testVP, testView)) {
-                camera = uiMainCam;
-                LOG(@"[FreeFire] Discovered camera via UICamera.get_mainCamera(): 0x%lx", (unsigned long)uiMainCam);
-            }
-        }
-    }
-
-    // Strategy 4: Call Camera.get_current() via RemoteCall (RVA 0x8CFF0F4)
-    if (!validOffsetPtr(camera) && [self discoveryDue]) {
-        uint64_t curCam = [remoteCall doRemoteCallStableWithTimeout:2
-                                                       functionName:(char *)"Camera_get_current"
-                                                    functionPointer:(void *)(self.binaryBase + 0x8CFF0F4)
-                                                               args:NULL
-                                                           argCount:0];
-        curCam = CleanPointer(curCam);
-        if (validOffsetPtr(curCam)) {
-            float testVP[16] = {}, testView[16] = {};
-            if (ReadCameraVPAndWorldMatrix(remoteCall, curCam, testVP, testView)) {
-                camera = curCam;
-                LOG(@"[FreeFire] Discovered camera via Camera.get_current(): 0x%lx", (unsigned long)curCam);
-            }
-        }
-    }
-
-    // Strategy 5: Inspect BaseGame.m_UIScene (Training Mode / Social Area / FrontEndGame)
+    // Strategy 4: Inspect BaseGame.m_UIScene (Training Mode / Social Area / FrontEndGame)
     if (!validOffsetPtr(camera)) {
         uintptr_t uiScene = CleanPointer(ReadMemorySafe<uintptr_t>(
             remoteCall, currentMatchGame + kBaseGame_UIScene));
@@ -815,7 +841,7 @@ NS_ASSUME_NONNULL_BEGIN
         }
     }
 
-    // Strategy 6: Scan currentMatchGame fields for any camera (0x10 to 0x250)
+    // Strategy 5: Scan currentMatchGame fields for any camera (0x10 to 0x250)
     if (!validOffsetPtr(camera)) {
         for (uint64_t off = 0x10; off <= 0x250; off += sizeof(uintptr_t)) {
             uintptr_t ptr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + off));
@@ -823,6 +849,16 @@ NS_ASSUME_NONNULL_BEGIN
                 float testVP[16] = {}, testView[16] = {};
                 if (ReadCameraVPAndWorldMatrix(remoteCall, ptr, testVP, testView)) {
                     camera = ptr;
+                    break;
+                }
+                uintptr_t subCam = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ptr + 0x20));
+                if (validOffsetPtr(subCam) && ReadCameraVPAndWorldMatrix(remoteCall, subCam, testVP, testView)) {
+                    camera = subCam;
+                    break;
+                }
+                uintptr_t subCam38 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ptr + 0x38));
+                if (validOffsetPtr(subCam38) && ReadCameraVPAndWorldMatrix(remoteCall, subCam38, testVP, testView)) {
+                    camera = subCam38;
                     break;
                 }
             }
@@ -834,6 +870,9 @@ NS_ASSUME_NONNULL_BEGIN
 
     self.cachedCamera = camera;
     self.cachedCamMgr = camMgr;
+
+    LOG(@"[FreeFire] Discovered camera: 0x%lx (camMgr=0x%lx)",
+        (unsigned long)camera, (unsigned long)camMgr);
 
     if (outCamera)
         *outCamera = camera;
@@ -969,15 +1008,14 @@ NS_ASSUME_NONNULL_BEGIN
                    matchGame:currentMatchGame
                       camera:&camera
                       camMgr:&camMgr]) {
+        uintptr_t pe = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kFrontEndGame_PostEffect));
+        uintptr_t ownCam = validOffsetPtr(pe) ? CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, pe + kPostEffectManager_OwnerCamera)) : 0;
         uintptr_t uiScene = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kBaseGame_UIScene));
-        uintptr_t c170 = validOffsetPtr(uiScene) ? CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, uiScene + 0x170)) : 0;
-        uintptr_t c178 = validOffsetPtr(uiScene) ? CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, uiScene + 0x178)) : 0;
-        uintptr_t mgrD8 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + 0xD8));
-        [self reportStage:[NSString stringWithFormat:@"stage 3/6: camera not found (cg=0x%lx'%s', ui=0x%lx, c170=0x%lx, c178=0x%lx, mgr=0x%lx)",
+        uintptr_t mgrD8 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kMatchGame_CameraControllerManager));
+        [self reportStage:[NSString stringWithFormat:@"stage 3/6: camera not found (cg=0x%lx'%s', pe=0x%lx, ownCam=0x%lx, ui=0x%lx, mgr=0x%lx)",
                                                       (unsigned long)currentMatchGame, matchGameClass,
-                                                      (unsigned long)uiScene,
-                                                      (unsigned long)c170, (unsigned long)c178,
-                                                      (unsigned long)mgrD8]];
+                                                      (unsigned long)pe, (unsigned long)ownCam,
+                                                      (unsigned long)uiScene, (unsigned long)mgrD8]];
         @synchronized(self) {
             self.hasValidFrame = NO;
             [self clearOverlayTargets];

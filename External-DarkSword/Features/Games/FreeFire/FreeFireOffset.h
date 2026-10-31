@@ -59,6 +59,17 @@ inline constexpr uint64_t kUIFrontEndScene_BgCamera = 0x178;
 inline constexpr uint64_t kUIFrontEndScene_LobbyCamGyro = 0x190;
 inline constexpr uint64_t kGyroCameraController_Cam1 = 0x20;
 
+// FrontEndGame & PostEffectManager (Training Ground / Social Area)
+inline constexpr uint64_t kFrontEndGame_PostEffect = 0x90;
+inline constexpr uint64_t kPostEffectManager_ExtraCameras = 0x20;
+inline constexpr uint64_t kPostEffectManager_OwnerCamera = 0x38;
+
+// UICamera
+inline constexpr uint64_t kMethodInfo_UICamera_CCtor = 0x19665B30;
+inline constexpr uint64_t kUICameraStatic_Current = 0xB0;
+inline constexpr uint64_t kUICameraStatic_CurrentCamera = 0xB8;
+inline constexpr uint64_t kUICamera_mCam = 0x98;
+
 // MatchGame Fields
 inline constexpr uint64_t kMatchGame_ReplicationEntities = 0xC0;
 inline constexpr uint64_t kMatchGame_CameraControllerManager = 0xD8;

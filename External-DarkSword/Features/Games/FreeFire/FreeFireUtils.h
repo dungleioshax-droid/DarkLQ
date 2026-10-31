@@ -203,20 +203,14 @@ static bool ReadCameraVPAndWorldMatrix(RemoteCall *remoteCall, uintptr_t camera,
             return true;
     }
 
-    // Extended discovery: scan native camera for worldToClip matrix
-    for (uint64_t clipOff = 0x40; clipOff <= 0x260; clipOff += 0x8) {
-        if (tryWorldToClip(clipOff))
+    // Fast consecutive matrix block discovery (m_WorldToCamera, m_Projection, m_WorldToClip)
+    for (uint64_t baseOff = 0x40; baseOff <= 0x200; baseOff += 0x8) {
+        if (tryViewProjection(baseOff, baseOff + 0x40))
             return true;
-    }
-
-    // Extended discovery: scan native camera for view * proj matrix pairs
-    for (uint64_t viewOff = 0x40; viewOff <= 0x180; viewOff += 0x10) {
-        for (uint64_t projOff = 0x40; projOff <= 0x180; projOff += 0x10) {
-            if (viewOff == projOff)
-                continue;
-            if (tryViewProjection(viewOff, projOff))
-                return true;
-        }
+        if (tryWorldToClip(baseOff + 0x80))
+            return true;
+        if (tryWorldToClip(baseOff))
+            return true;
     }
 
     return false;
