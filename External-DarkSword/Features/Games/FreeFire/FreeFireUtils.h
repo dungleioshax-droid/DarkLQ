@@ -675,9 +675,44 @@ static bool IsDictionaryObject(RemoteCall *remoteCall, uintptr_t object) {
     return false;
 }
 
+static bool LooksLikeCameraManager(RemoteCall *remoteCall, uintptr_t object);
+
+// m_Match (MatchGame + 0x90) is a managed object whose first player/vehicle
+// containers live between 0x128 and 0x2A0. At least three of those fields must
+// have a real Dictionary/List/Queue shape. This is deliberately structural:
+// class names are not reliable on every Free Fire build.
+static bool LooksLikeMatchObject(RemoteCall *remoteCall, uintptr_t matchObj) {
+    if (!remoteCall || !validOffsetPtr(matchObj))
+        return false;
+    matchObj = CleanPointer(matchObj);
+
+    static const uint64_t kShapedOffsets[] = {
+        kMatch_Players1, kMatch_Players2, kMatch_Players3, kMatch_Players4,
+        kMatch_Players5, kMatch_PlayerList1, kMatch_PlayerList2,
+        kMatch_AIPawns,    kMatch_Teams,     kMatch_Vehicles,
+        kMatch_Containers
+    };
+
+    int shaped = 0;
+    for (uint64_t off : kShapedOffsets) {
+        uintptr_t cand = CleanPointer(
+            ReadMemorySafe<uintptr_t>(remoteCall, matchObj + off));
+        if (!validOffsetPtr(cand))
+            continue;
+        FreeFireEntityContainer info;
+        if (InspectEntityContainer(remoteCall, cand, &info))
+            ++shaped;
+        if (shaped >= 3)
+            return true;
+    }
+    return false;
+}
+
 static bool FieldHoldsMatchGame(RemoteCall *remoteCall, uintptr_t value) {
     if (!remoteCall || !validOffsetPtr(value))
         return false;
+    value = CleanPointer(value);
+
     char name[64] = {0};
     if (ReadIl2CppClassName(remoteCall, value, name, sizeof(name))) {
         if (strstr(name, "FrontEnd") != NULL ||
@@ -687,20 +722,24 @@ static bool FieldHoldsMatchGame(RemoteCall *remoteCall, uintptr_t value) {
         if (strstr(name, "MatchGame") != NULL)
             return true;
     }
-    if (IsSubclassOf(remoteCall, value, "MatchGame") ||
-        IsSubclassOf(remoteCall, value, "COWGameBase"))
+
+    // MatchGame subclass. Do not accept COWGameBase: FrontEndGame inherits it
+    // too, which made the lobby object look like an active match.
+    if (IsSubclassOf(remoteCall, value, "MatchGame"))
         return true;
 
-    // Structural validation fallback:
-    // Match games own CameraControllerManager at 0xD8 or replication dictionary at 0xC0
+    // Structural validation fallback. Require a real m_Match object plus a
+    // second MatchGame-shaped field, so a FrontEndGame cannot pass by itself.
+    uintptr_t matchObj = CleanPointer(
+        ReadMemorySafe<uintptr_t>(remoteCall, value + kMatchGame_Match));
+    if (!LooksLikeMatchObject(remoteCall, matchObj))
+        return false;
+
     uintptr_t camMgr = CleanPointer(
         ReadMemorySafe<uintptr_t>(remoteCall, value + kMatchGame_CameraControllerManager));
-    if (validOffsetPtr(camMgr)) {
-        char camName[64] = {0};
-        if (ReadIl2CppClassName(remoteCall, camMgr, camName, sizeof(camName)) &&
-            strstr(camName, "Camera") != NULL)
-            return true;
-    }
+    if (validOffsetPtr(camMgr) && LooksLikeCameraManager(remoteCall, camMgr))
+        return true;
+
     uintptr_t repDict = CleanPointer(
         ReadMemorySafe<uintptr_t>(remoteCall, value + kMatchGame_ReplicationEntities));
     if (validOffsetPtr(repDict) && IsDictionaryObject(remoteCall, repDict))

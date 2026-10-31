@@ -905,6 +905,8 @@ NS_ASSUME_NONNULL_BEGIN
     FreeFireEntityContainer bestContainer;
     int bestScore = 0;
     FreeFireEntityContainer firstValidContainer;
+    FreeFireEntityContainer largestContainer;
+    int largestCount = -1;
 
     auto consider = [&](uintptr_t cand) {
         cand = CleanPointer(cand);
@@ -914,6 +916,10 @@ NS_ASSUME_NONNULL_BEGIN
             return;
         if (firstValidContainer.container == 0)
             firstValidContainer = info;
+        if (info.count >= 0 && info.count <= 10000 && info.count > largestCount) {
+            largestCount = info.count;
+            largestContainer = info;
+        }
         if (info.count <= 0)
             return;
 
@@ -992,7 +998,7 @@ NS_ASSUME_NONNULL_BEGIN
         }
     }
 
-    // 3. BaseGame static fields via parent-walk
+    // 3. BaseGame static fields via parent-walk / structural walk
     if (validOffsetPtr(currentMatchGame)) {
         uintptr_t walkStatics = ResolveBaseGameStaticFields(remoteCall, currentMatchGame);
         if (validOffsetPtr(walkStatics)) {
@@ -1000,6 +1006,7 @@ NS_ASSUME_NONNULL_BEGIN
             consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sTickedEntities)));
             consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sAllLEntities)));
         }
+        consider(ResolveBaseGameAllEntities(remoteCall, currentMatchGame));
     }
     if (validOffsetPtr(ctxMatchGame)) {
         uintptr_t walkStatics = ResolveBaseGameStaticFields(remoteCall, ctxMatchGame);
@@ -1008,6 +1015,7 @@ NS_ASSUME_NONNULL_BEGIN
             consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sTickedEntities)));
             consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sAllLEntities)));
         }
+        consider(ResolveBaseGameAllEntities(remoteCall, ctxMatchGame));
     }
 
     // 4. MatchGame fields on currentMatchGame
@@ -1089,7 +1097,18 @@ NS_ASSUME_NONNULL_BEGIN
         }
     }
 
-    return bestContainer.container != 0 ? bestContainer : firstValidContainer;
+    if (bestContainer.container != 0)
+        return bestContainer;
+
+    // No entity in any container was positively identified, but a container
+    // that actually holds entries is still far more useful than an empty one:
+    // the snapshot loop validates every element on its own. Returning the first
+    // dictionary we happened to see (often empty) is what made stage 5 report
+    // entities=0 even when populated candidate containers existed.
+    if (largestContainer.container != 0 && largestCount > 0)
+        return largestContainer;
+
+    return firstValidContainer;
 }
 
 - (void)updateSnapshot:(RemoteCall *)remoteCall {
@@ -1272,10 +1291,59 @@ NS_ASSUME_NONNULL_BEGIN
                                                                matchGame:currentMatchGame
                                                             ctxMatchGame:ctxMatchGame];
 
+    // Diagnostics: record where candidate dictionaries live so the next device
+    // log explains why a container was (or was not) selected.
+    auto containerCount = [&](uintptr_t cand) -> int {
+        cand = CleanPointer(cand);
+        if (!validOffsetPtr(cand))
+            return -1;
+        FreeFireEntityContainer info;
+        if (!InspectEntityContainer(remoteCall, cand, &info))
+            return -1;
+        return info.count;
+    };
+
+    char diagBuf[512] = {0};
+    {
+        uintptr_t diagMatchObj = CleanPointer(ReadMemorySafe<uintptr_t>(
+            remoteCall, currentMatchGame + kMatchGame_Match));
+        uintptr_t diagRepDict = CleanPointer(ReadMemorySafe<uintptr_t>(
+            remoteCall, currentMatchGame + kMatchGame_ReplicationEntities));
+        uintptr_t diagLRepDict = CleanPointer(ReadMemorySafe<uintptr_t>(
+            remoteCall, currentMatchGame + kMatchGame_LReplicationEntities));
+        uintptr_t diagUIScene = CleanPointer(ReadMemorySafe<uintptr_t>(
+            remoteCall, currentMatchGame + kBaseGame_UIScene));
+        uintptr_t diagBgStatics = ResolveBaseGameStaticFields(remoteCall, currentMatchGame);
+
+        uintptr_t diagAllEnt = 0;
+        if (validOffsetPtr(diagBgStatics)) {
+            diagAllEnt = CleanPointer(ReadMemorySafe<uintptr_t>(
+                remoteCall, diagBgStatics + kBaseGameStatic_sAllEntities));
+        }
+
+        int diagP128 = -1, diagP130 = -1, diagP158 = -1, diagP168 = -1, diagP2A0 = -1;
+        if (validOffsetPtr(diagMatchObj)) {
+            diagP128 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, diagMatchObj + kMatch_Players1));
+            diagP130 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, diagMatchObj + kMatch_Players2));
+            diagP158 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, diagMatchObj + kMatch_PlayerList1));
+            diagP168 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, diagMatchObj + kMatch_AIPawns));
+            diagP2A0 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, diagMatchObj + kMatch_Containers));
+        }
+
+        snprintf(diagBuf, sizeof(diagBuf),
+                 "match=0x%lx rep=0x%lx lrep=0x%lx ui=0x%lx bgStatic=0x%lx allEnt=0x%lx(%d) "
+                 "p128=%d p130=%d p158=%d p168=%d p2A0=%d",
+                 (unsigned long)diagMatchObj, (unsigned long)diagRepDict,
+                 (unsigned long)diagLRepDict, (unsigned long)diagUIScene,
+                 (unsigned long)diagBgStatics, (unsigned long)diagAllEnt,
+                 containerCount(diagAllEnt),
+                 diagP128, diagP130, diagP158, diagP168, diagP2A0);
+    }
+
     if (!validOffsetPtr(containerInfo.container)) {
         [self reportStage:
-                  [NSString stringWithFormat:@"stage 5/6: entity container missing (game='%s', ctxMg=0x%lx)",
-                                             matchGameClass, (unsigned long)ctxMatchGame]];
+                  [NSString stringWithFormat:@"stage 5/6: entity container missing (game='%s', ctxMg=0x%lx, %s)",
+                                             matchGameClass, (unsigned long)ctxMatchGame, diagBuf]];
         @synchronized(self) {
             self.hasValidFrame = NO;
         }
@@ -1284,12 +1352,12 @@ NS_ASSUME_NONNULL_BEGIN
 
     if (containerInfo.count <= 0 || containerInfo.count > 10000) {
         [self reportStage:
-                  [NSString stringWithFormat:@"stage 5/6: entities=%d (dict=0x%lx, type=%d, game='%s', ctxMg=0x%lx, waiting for targets/match)",
+                  [NSString stringWithFormat:@"stage 5/6: entities=%d (dict=0x%lx, type=%d, game='%s', ctxMg=0x%lx, %s)",
                                              (int)containerInfo.count,
                                              (unsigned long)containerInfo.container,
                                              containerInfo.containerType,
                                              matchGameClass,
-                                             (unsigned long)ctxMatchGame]];
+                                             (unsigned long)ctxMatchGame, diagBuf]];
         @synchronized(self) {
             self.hasValidFrame = NO;
         }
@@ -1379,12 +1447,18 @@ NS_ASSUME_NONNULL_BEGIN
                                 IsSubclassOf(remoteCall, entity, "Player") ||
                                 IsSubclassOf(remoteCall, entity, "AttackableEntity") ||
                                 IsSubclassOf(remoteCall, entity, "Entity"));
-        } else {
-            // Structural fallback: check if entity has a valid 3D position
+        }
+        // Class names are unreliable on some builds (ReadIl2CppClassName can
+        // return an empty or unrelated name), so always allow a structural
+        // position check as a second chance instead of dropping the entity.
+        if (!isTargetOrPlayer) {
             Vector3 testPos = Vector3::zero();
             if (ReadEntityPosition(remoteCall, entity, &testPos)) {
                 isTargetOrPlayer = YES;
-                snprintf(className, sizeof(className), "Target_%u", (unsigned int)(entity & 0xFFFF));
+                if (className[0] == '\0') {
+                    snprintf(className, sizeof(className), "Target_%u",
+                             (unsigned int)(entity & 0xFFFF));
+                }
             }
         }
 
