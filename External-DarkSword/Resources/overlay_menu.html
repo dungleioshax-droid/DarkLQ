@@ -155,7 +155,7 @@
         height: 48px;
         padding: 6px 8px;
         display: grid;
-        grid-template-columns: repeat(3, 1fr);
+        grid-template-columns: repeat(4, 1fr);
         gap: 5px;
         border-bottom: 1px solid var(--line);
         background: rgba(12, 12, 26, 0.96);
@@ -167,8 +167,36 @@
         color: var(--muted);
         font-size: 10px;
         font-weight: 800;
-        letter-spacing: 0.4px;
+        letter-spacing: 0.3px;
+        padding: 0 4px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
+      body.game-freefire .aov-only {
+        display: none !important;
+      }
+      .rangeCard {
+        padding: 12px 0 14px;
+        border-bottom: 1px solid rgba(150, 139, 255, 0.12);
+      }
+      .rangeTop {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .rangeValue {
+        color: var(--cyan);
+        font: 800 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      input[type="range"] {
+        width: 100%;
+        margin-top: 10px;
+        accent-color: var(--cyan);
+        cursor: pointer;
+      }
+      body.compact .rangeCard { padding: 8px 0; }
       .tab.active {
         border-color: rgba(167, 139, 250, 0.25);
         background: linear-gradient(110deg, rgba(167, 139, 250, 0.18), rgba(92, 232, 255, 0.08));
@@ -340,13 +368,87 @@
         <span id="socketStatus">LINKING…</span>
       </div>
       <nav id="tabs" aria-label="Menu sections">
-        <button class="tab active" data-tab="overview" data-i18n="tabOverview">Overview</button>
+        <button class="tab active" data-tab="features" data-i18n="tabFeatures">Features</button>
+        <button class="tab" data-tab="overview" data-i18n="tabOverview">Overview</button>
         <button class="tab" data-tab="settings" data-i18n="tabSettings">Interface</button>
         <button class="tab" data-tab="position" data-i18n="tabPosition">Position</button>
       </nav>
       <main id="content">
-        <section class="panel active" data-panel="overview">
-          <p class="eyebrow" data-i18n="eyebrow">SYSTEM OVERVIEW / 01</p>
+        <section class="panel active" data-panel="features">
+          <p class="eyebrow" data-i18n="eyebrowFeatures">TUNING / 01</p>
+          <h2 class="sectionHeading" data-i18n="featuresTitle">In-Game Features</h2>
+          <p class="sectionCopy" data-i18n="featuresCopy">Toggle visual indicators and adjustments in real-time.</p>
+
+          <div class="settingRow">
+            <div>
+              <div class="settingTitle" data-i18n="espOverlay">ESP Overlay</div>
+              <div class="settingHint" data-i18n="espOverlayHint">Master toggle for ESP rendering</div>
+            </div>
+            <button class="switch" data-key="espEnabled" role="switch" aria-checked="false" aria-label="ESP Overlay"></button>
+          </div>
+
+          <div class="settingRow aov-only">
+            <div>
+              <div class="settingTitle" data-i18n="hackMap">Mini-Map Hack</div>
+              <div class="settingHint" data-i18n="hackMapHint">Reveal full enemies on mini-map</div>
+            </div>
+            <button class="switch" data-key="hackMapEnabled" role="switch" aria-checked="false" aria-label="Mini-Map Hack"></button>
+          </div>
+
+          <div class="settingRow">
+            <div>
+              <div class="settingTitle" data-i18n="espSnaplines">Snaplines</div>
+              <div class="settingHint" data-i18n="espSnaplinesHint">Draw guide lines to targets</div>
+            </div>
+            <button class="switch" data-key="showsLine" role="switch" aria-checked="false" aria-label="Snaplines"></button>
+          </div>
+
+          <div class="settingRow">
+            <div>
+              <div class="settingTitle" data-i18n="espBoxes">2D Box</div>
+              <div class="settingHint" data-i18n="espBoxesHint">Bounding boxes around enemies</div>
+            </div>
+            <button class="switch" data-key="showsBox" role="switch" aria-checked="false" aria-label="2D Box"></button>
+          </div>
+
+          <div class="settingRow">
+            <div>
+              <div class="settingTitle" data-i18n="espHealth">Health Bar (HP)</div>
+              <div class="settingHint" data-i18n="espHealthHint">Display target health indicators</div>
+            </div>
+            <button class="switch" data-key="showsHealth" role="switch" aria-checked="false" aria-label="Health Bar"></button>
+          </div>
+
+          <div class="settingRow">
+            <div>
+              <div class="settingTitle" data-i18n-aov="espNameAov" data-i18n-freefire="espNameFreeFire">Player Name</div>
+              <div class="settingHint" data-i18n="espNameHint">Display name tags above targets</div>
+            </div>
+            <button class="switch" data-key="showsName" role="switch" aria-checked="false" aria-label="Player Name"></button>
+          </div>
+
+          <div class="settingRow">
+            <div>
+              <div class="settingTitle" data-i18n="espDistance">Distance</div>
+              <div class="settingHint" data-i18n="espDistanceHint">Display distance in meters</div>
+            </div>
+            <button class="switch" data-key="showsDistance" role="switch" aria-checked="false" aria-label="Distance"></button>
+          </div>
+
+          <div class="rangeCard aov-only">
+            <div class="rangeTop">
+              <div>
+                <div class="settingTitle" data-i18n="cameraHeight">Camera Height</div>
+                <div class="settingHint" data-i18n="cameraHeightHint">Adjust camera zoom altitude</div>
+              </div>
+              <div id="cameraValue" class="rangeValue">1.0</div>
+            </div>
+            <input id="cameraHeight" type="range" min="1.0" max="10.0" step="0.1" value="1.0" aria-label="Camera Height" />
+          </div>
+        </section>
+
+        <section class="panel" data-panel="overview">
+          <p class="eyebrow" data-i18n="eyebrowOverview">SYSTEM OVERVIEW / 02</p>
           <h1 class="welcomeTitle" data-i18n="welcome">Welcome back.</h1>
           <p class="welcomeCopy" data-i18n="welcomeCopy">Your overlay at a glance. Drag this panel by its header to move it.</p>
           <div class="statusCard">
@@ -362,7 +464,7 @@
           <div class="infoNote" data-i18n="infoNote">Use Interface to adjust this panel’s appearance, or Position to place the floating shortcut.</div>
         </section>
         <section class="panel" data-panel="settings">
-          <p class="eyebrow" data-i18n="eyebrowSettings">PREFERENCES / 02</p>
+          <p class="eyebrow" data-i18n="eyebrowSettings">PREFERENCES / 03</p>
           <h2 class="sectionHeading" data-i18n="settingsTitle">Interface settings</h2>
           <p class="sectionCopy" data-i18n="settingsCopy">These preferences affect this menu only and are saved on this device.</p>
           <div class="settingRow">
@@ -379,7 +481,7 @@
           </div>
         </section>
         <section class="panel" data-panel="position">
-          <p class="eyebrow" data-i18n="eyebrowPosition">LAYOUT / 03</p>
+          <p class="eyebrow" data-i18n="eyebrowPosition">LAYOUT / 04</p>
           <h2 class="sectionHeading" data-i18n="positionTitle">Floating shortcut</h2>
           <p class="mapHint" data-i18n="positionHint">Tap anywhere in the preview to move the floating button to that point on screen.</p>
           <div id="screenMap" role="button" aria-label="Choose floating button position"><div id="fabDot"></div></div>
@@ -395,31 +497,66 @@
       var header = document.getElementById("header");
       var screenMap = document.getElementById("screenMap");
       var fabDot = document.getElementById("fabDot");
-      var state = { game: "aov", remoteConnected: false, connectedProcess: "", aovStatus: "Idle", freeFireStatus: "Idle", socketClients: 0 };
+      var state = {
+        game: "aov",
+        espEnabled: false,
+        hackMapEnabled: false,
+        showsLine: false,
+        showsBox: false,
+        showsHealth: false,
+        showsName: false,
+        showsDistance: false,
+        cameraHeight: 1.0,
+        cameraHeightMin: 1.0,
+        cameraHeightMax: 10.0,
+        remoteConnected: false,
+        connectedProcess: "",
+        aovStatus: "Idle",
+        freeFireStatus: "Idle",
+        socketClients: 0
+      };
       var layout = { screenWidth: 16, screenHeight: 9, fabCenterX: 0.5, fabCenterY: 0.5 };
       var locale = "vi";
       var preferences = { glow: true, compact: false };
       var translations = {
         en: {
-          subtitle: "CONTROL CENTER", tabOverview: "Overview", tabSettings: "Interface", tabPosition: "Position",
-          eyebrow: "SYSTEM OVERVIEW / 01", welcome: "Welcome back.", welcomeCopy: "Your overlay at a glance. Drag this panel by its header to move it.",
+          subtitle: "CONTROL CENTER", tabFeatures: "Features", tabOverview: "Overview", tabSettings: "Interface", tabPosition: "Position",
+          eyebrowFeatures: "TUNING / 01", featuresTitle: "In-Game Features", featuresCopy: "Toggle visual overlays and adjustments in real-time.",
+          espOverlay: "ESP Overlay", espOverlayHint: "Master toggle for ESP rendering",
+          hackMap: "Mini-Map Hack", hackMapHint: "Reveal full enemies on mini-map",
+          espSnaplines: "Snaplines", espSnaplinesHint: "Draw guide lines to targets",
+          espBoxes: "2D Box", espBoxesHint: "Bounding boxes around enemies",
+          espHealth: "Health Bar (HP)", espHealthHint: "Display target health indicators",
+          espNameAov: "Hero Name", espNameFreeFire: "Player Name", espNameHint: "Display name tags above targets",
+          espDistance: "Distance", espDistanceHint: "Display distance in meters",
+          cameraHeight: "Camera Height", cameraHeightHint: "Adjust camera zoom altitude",
+          eyebrowOverview: "SYSTEM OVERVIEW / 02", welcome: "Welcome back.", welcomeCopy: "Your overlay at a glance. Drag this panel by its header to move it.",
           activeSession: "ACTIVE SESSION", process: "Process", sessionStatus: "Session status", clients: "Overlay clients",
           infoNote: "Use Interface to adjust this panel’s appearance, or Position to place the floating shortcut.",
-          eyebrowSettings: "PREFERENCES / 02", settingsTitle: "Interface settings", settingsCopy: "These preferences affect this menu only and are saved on this device.",
+          eyebrowSettings: "PREFERENCES / 03", settingsTitle: "Interface settings", settingsCopy: "These preferences affect this menu only and are saved on this device.",
           neonTitle: "Neon glow", neonHint: "Enable soft accent lighting", compactTitle: "Compact layout", compactHint: "Reduce spacing in the menu",
-          languageTitle: "Language", languageHint: "Choose the menu language", eyebrowPosition: "LAYOUT / 03", positionTitle: "Floating shortcut",
+          languageTitle: "Language", languageHint: "Choose the menu language", eyebrowPosition: "LAYOUT / 04", positionTitle: "Floating shortcut",
           positionHint: "Tap anywhere in the preview to move the floating button to that point on screen.", positionFoot: "TAP PREVIEW TO PLACE · DRAG HEADER TO MOVE MENU",
           online: "ONLINE", offline: "OFFLINE", connected: "CONNECTED", idle: "IDLE", bridgeIdle: "BRIDGE IDLE", bridgeReady: "BRIDGE READY",
           gameAov: "Liên Quân Mobile", gameFreeFire: "Free Fire", noSession: "No active session", connecting: "Connecting", disconnected: "Disconnected"
         },
         vi: {
-          subtitle: "TRUNG TÂM ĐIỀU KHIỂN", tabOverview: "Tổng quan", tabSettings: "Giao diện", tabPosition: "Vị trí",
-          eyebrow: "TỔNG QUAN HỆ THỐNG / 01", welcome: "Chào mừng trở lại.", welcomeCopy: "Trạng thái overlay của bạn. Kéo thanh tiêu đề để di chuyển bảng này.",
+          subtitle: "TRUNG TÂM ĐIỀU KHIỂN", tabFeatures: "Tính năng", tabOverview: "Tổng quan", tabSettings: "Giao diện", tabPosition: "Vị trí",
+          eyebrowFeatures: "TÍNH NĂNG / 01", featuresTitle: "Tùy chỉnh tính năng", featuresCopy: "Bật tắt hiển thị overlay và các tính năng trực tiếp trong game.",
+          espOverlay: "Hiển thị ESP", espOverlayHint: "Công tắc chính cho toàn bộ hiển thị ESP",
+          hackMap: "Bản đồ nhỏ (Hack Map)", hackMapHint: "Hiển thị vị trí kẻ địch trên bản đồ nhỏ",
+          espSnaplines: "Đường kẻ (Snaplines)", espSnaplinesHint: "Kẻ đường định hướng từ trên xuống mục tiêu",
+          espBoxes: "Khung hộp (2D Box)", espBoxesHint: "Khung bao quanh kẻ địch",
+          espHealth: "Thanh máu (HP)", espHealthHint: "Hiển thị thanh máu trên đầu mục tiêu",
+          espNameAov: "Tên tướng", espNameFreeFire: "Tên người chơi", espNameHint: "Hiển thị tên nhận diện mục tiêu",
+          espDistance: "Khoảng cách (Distance)", espDistanceHint: "Hiển thị khoảng cách tới mục tiêu",
+          cameraHeight: "Góc nhìn Camera", cameraHeightHint: "Điều chỉnh độ cao góc nhìn từ xa",
+          eyebrowOverview: "TỔNG QUAN HỆ THỐNG / 02", welcome: "Chào mừng trở lại.", welcomeCopy: "Trạng thái overlay của bạn. Kéo thanh tiêu đề để di chuyển bảng này.",
           activeSession: "PHIÊN ĐANG HOẠT ĐỘNG", process: "Tiến trình", sessionStatus: "Trạng thái phiên", clients: "Kết nối overlay",
           infoNote: "Mở Giao diện để chỉnh cách hiển thị bảng, hoặc Vị trí để đặt nút nổi.",
-          eyebrowSettings: "TÙY CHỌN / 02", settingsTitle: "Cài đặt giao diện", settingsCopy: "Các tùy chọn chỉ áp dụng cho menu và được lưu trên thiết bị này.",
+          eyebrowSettings: "TÙY CHỌN / 03", settingsTitle: "Cài đặt giao diện", settingsCopy: "Các tùy chọn chỉ áp dụng cho menu và được lưu trên thiết bị này.",
           neonTitle: "Hiệu ứng neon", neonHint: "Bật ánh sáng màu nhẹ", compactTitle: "Bố cục gọn", compactHint: "Giảm khoảng cách trong menu",
-          languageTitle: "Ngôn ngữ", languageHint: "Chọn ngôn ngữ menu", eyebrowPosition: "BỐ CỤC / 03", positionTitle: "Nút truy cập nổi",
+          languageTitle: "Ngôn ngữ", languageHint: "Chọn ngôn ngữ menu", eyebrowPosition: "BỐ CỤC / 04", positionTitle: "Nút truy cập nổi",
           positionHint: "Chạm vào vị trí bất kỳ trong khung xem trước để di chuyển nút nổi tới đó.", positionFoot: "CHẠM ĐỂ ĐẶT · KÉO TIÊU ĐỀ ĐỂ DI CHUYỂN MENU",
           online: "TRỰC TUYẾN", offline: "NGOẠI TUYẾN", connected: "ĐÃ KẾT NỐI", idle: "CHỜ", bridgeIdle: "CẦU NỐI ĐANG CHỜ", bridgeReady: "CẦU NỐI SẴN SÀNG",
           gameAov: "Liên Quân Mobile", gameFreeFire: "Free Fire", noSession: "Chưa có phiên hoạt động", connecting: "Đang kết nối", disconnected: "Đã ngắt kết nối"
@@ -437,16 +574,20 @@
         if (!socket || socket.readyState !== WebSocket.OPEN) return false;
         try { socket.send(JSON.stringify(message)); return true; } catch (error) { return false; }
       }
+      function sendOption(key, value) {
+        send({ type: "setOption", key: key, value: value });
+      }
       function setMenuVisible(visible) { send({ type: "setMenuVisible", visible: !!visible }); }
       function activeGame() { return state.game === "freefire" ? "freefire" : "aov"; }
       function statusText(value) {
-        var strings = translations[locale];
+        var strings = translations[locale] || translations.vi;
         if (!value || value === "Idle") return strings.idle;
         if (value === "Disconnected") return strings.disconnected;
         return String(value);
       }
+      var cameraHeightDirty = false;
       function renderState() {
-        var strings = translations[locale];
+        var strings = translations[locale] || translations.vi;
         var connected = !!state.remoteConnected;
         var strip = document.getElementById("connectionStrip");
         strip.classList.toggle("connected", connected);
@@ -458,6 +599,21 @@
         var sessionStatus = activeGame() === "freefire" ? state.freeFireStatus : state.aovStatus;
         document.getElementById("sessionStatus").textContent = statusText(connected ? strings.connected : sessionStatus);
         document.getElementById("clientCount").textContent = String(Number(state.socketClients) || 0);
+
+        document.querySelectorAll(".switch[data-key]").forEach(function (button) {
+          var key = button.dataset.key;
+          var enabled = !!state[key];
+          button.classList.toggle("on", enabled);
+          button.setAttribute("aria-checked", String(enabled));
+        });
+
+        var cameraControl = document.getElementById("cameraHeight");
+        var cameraVal = document.getElementById("cameraValue");
+        if (cameraControl && !cameraHeightDirty && state.cameraHeight !== undefined) {
+          var ch = Number(state.cameraHeight) || 1.0;
+          cameraControl.value = ch;
+          if (cameraVal) cameraVal.textContent = ch.toFixed(1);
+        }
       }
       function renderLayout() {
         var width = Math.max(1, Number(layout.screenWidth) || 1);
@@ -467,10 +623,15 @@
         fabDot.style.top = clamp(Number(layout.fabCenterY) || 0, 0, 1) * 100 + "%";
       }
       function applyLocale() {
-        var strings = translations[locale];
+        var strings = translations[locale] || translations.vi;
         document.documentElement.lang = locale;
         document.querySelectorAll("[data-i18n]").forEach(function (element) {
           var value = strings[element.dataset.i18n];
+          if (value) element.textContent = value;
+        });
+        document.querySelectorAll("[data-i18n-aov]").forEach(function (element) {
+          var key = activeGame() === "freefire" ? element.dataset.i18nFreefire : element.dataset.i18nAov;
+          var value = key ? strings[key] : "";
           if (value) element.textContent = value;
         });
         document.getElementById("language").textContent = locale === "vi" ? "EN" : "VI";
@@ -478,6 +639,11 @@
           button.classList.toggle("active", button.dataset.locale === locale);
         });
         renderState();
+      }
+      function applyGameMode() {
+        var isFreeFire = activeGame() === "freefire";
+        document.body.classList.toggle("game-freefire", isFreeFire);
+        applyLocale();
       }
       function renderPreferences() {
         document.body.classList.toggle("no-glow", !preferences.glow);
@@ -493,6 +659,7 @@
           var payload = JSON.parse(raw);
           if (payload && payload.type === "state" && payload.state) {
             Object.keys(payload.state).forEach(function (key) { state[key] = payload.state[key]; });
+            applyGameMode();
             renderState();
           }
           if (payload && payload.type === "overlayLayout" && payload.layout) {
@@ -506,6 +673,7 @@
         socket.onopen = function () {
           document.getElementById("socketStatus").textContent = "LOCAL LINK ACTIVE";
           send({ type: "hello", role: "menu" });
+          send({ type: "requestState" });
         };
         socket.onmessage = function (event) { if (typeof event.data === "string") applyPayload(event.data); };
         socket.onclose = function () {
@@ -524,6 +692,14 @@
         button.addEventListener("click", function () {
           document.querySelectorAll(".tab").forEach(function (item) { item.classList.toggle("active", item === button); });
           document.querySelectorAll(".panel").forEach(function (panel) { panel.classList.toggle("active", panel.dataset.panel === button.dataset.tab); });
+        });
+      });
+      document.querySelectorAll(".switch[data-key]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          var key = button.dataset.key;
+          state[key] = !state[key];
+          renderState();
+          sendOption(key, state[key]);
         });
       });
       document.querySelectorAll(".switch[data-pref]").forEach(function (button) {
@@ -546,6 +722,23 @@
         try { localStorage.setItem("ds.menu.locale", locale); } catch (error) {}
         applyLocale();
       });
+      var cameraHeightControl = document.getElementById("cameraHeight");
+      if (cameraHeightControl) {
+        function commitCameraHeight() {
+          if (!cameraHeightDirty) return;
+          cameraHeightDirty = false;
+          sendOption("cameraHeight", state.cameraHeight);
+        }
+        cameraHeightControl.addEventListener("input", function () {
+          state.cameraHeight = Number(cameraHeightControl.value);
+          var cameraVal = document.getElementById("cameraValue");
+          if (cameraVal) cameraVal.textContent = state.cameraHeight.toFixed(1);
+          cameraHeightDirty = true;
+        });
+        cameraHeightControl.addEventListener("change", commitCameraHeight);
+        cameraHeightControl.addEventListener("pointerup", commitCameraHeight);
+        cameraHeightControl.addEventListener("touchend", commitCameraHeight);
+      }
       document.getElementById("close").addEventListener("click", function () { setMenuVisible(false); });
       screenMap.addEventListener("pointerdown", function (event) {
         var rect = screenMap.getBoundingClientRect();
@@ -583,7 +776,7 @@
       header.addEventListener("pointerup", stopMenuDrag);
       header.addEventListener("pointercancel", stopMenuDrag);
 
-      applyLocale();
+      applyGameMode();
       renderPreferences();
       renderLayout();
       renderState();

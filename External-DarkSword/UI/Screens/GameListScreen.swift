@@ -202,6 +202,11 @@ struct GameListScreen: View {
                                         palette: palette
                                     )
                                     FeatureToggleRow(
+                                        title: AppStrings.espName(language),
+                                        isOn: $manager.aovShowsName,
+                                        palette: palette
+                                    )
+                                    FeatureToggleRow(
                                         title: AppStrings.espDistance(language),
                                         isOn: $manager.aovShowsDistance,
                                         palette: palette
@@ -299,6 +304,11 @@ struct GameListScreen: View {
                                     FeatureToggleRow(
                                         title: AppStrings.espHealth(language),
                                         isOn: $manager.freeFireShowsHealth,
+                                        palette: palette
+                                    )
+                                    FeatureToggleRow(
+                                        title: AppStrings.espName(language),
+                                        isOn: $manager.freeFireShowsName,
                                         palette: palette
                                     )
                                     FeatureToggleRow(
