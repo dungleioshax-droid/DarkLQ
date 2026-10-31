@@ -517,6 +517,10 @@ static uint64_t gFreeFireCameraManagerFieldOffset = 0;
 static uint64_t gFreeFireCameraFieldOffset = 0;
 static uint64_t gFreeFireEntitiesFieldOffset = 0;
 
+static bool IsDictionaryObject(RemoteCall *remoteCall, uintptr_t object) {
+    return Il2CppClassNameContains(remoteCall, object, "Dictionary");
+}
+
 static bool FieldHoldsMatchGame(RemoteCall *remoteCall, uintptr_t value) {
     if (!remoteCall || !validOffsetPtr(value))
         return false;
@@ -575,10 +579,6 @@ static bool LooksLikeCameraManager(RemoteCall *remoteCall, uintptr_t object) {
     }
 
     return false;
-}
-
-static bool IsDictionaryObject(RemoteCall *remoteCall, uintptr_t object) {
-    return Il2CppClassNameContains(remoteCall, object, "Dictionary");
 }
 
 // Replication dictionaries are the ones whose values are Entity / Player / Target objects.

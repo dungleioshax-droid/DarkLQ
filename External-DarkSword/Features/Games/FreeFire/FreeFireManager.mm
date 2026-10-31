@@ -805,7 +805,8 @@ NS_ASSUME_NONNULL_BEGIN
     }
 
     if (!validOffsetPtr(currentMatchGame)) {
-        [self reportStage:@"stage 2/6: no CurrentMatchGame (lobby)"];
+        [self reportStage:[NSString stringWithFormat:@"stage 2/6: no CurrentMatchGame (lobby, field=0x%llx)",
+                                                     (unsigned long long)matchGameOffset]];
         @synchronized(self) {
             self.hasValidFrame = NO;
             [self clearOverlayTargets];
