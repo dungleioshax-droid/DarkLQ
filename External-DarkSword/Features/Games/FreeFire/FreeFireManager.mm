@@ -1218,6 +1218,20 @@ NS_ASSUME_NONNULL_BEGIN
     if (validOffsetPtr(currentMatchGame)) {
         ReadIl2CppClassName(remoteCall, currentMatchGame, matchGameClass,
                             sizeof(matchGameClass));
+        if (matchGameClass[0] == '\0') {
+            // Debug: log raw klass pointer to help diagnose PAC / mask issues
+            uintptr_t rawKlass = ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame);
+            uintptr_t cleanKlass = CleanPointer(rawKlass);
+            uintptr_t nameAtKlass = 0;
+            if (validOffsetPtr(cleanKlass)) {
+                nameAtKlass = ReadMemorySafe<uintptr_t>(remoteCall, cleanKlass + 0x10);
+            }
+            snprintf(matchGameClass, sizeof(matchGameClass),
+                     "?k=0x%lx/0x%lx,n=0x%lx",
+                     (unsigned long)rawKlass,
+                     (unsigned long)cleanKlass,
+                     (unsigned long)nameAtKlass);
+        }
     }
 
     if (!validOffsetPtr(currentMatchGame)) {
@@ -1321,6 +1335,15 @@ NS_ASSUME_NONNULL_BEGIN
                 remoteCall, diagBgStatics + kBaseGameStatic_sAllEntities));
         }
 
+        // Training target diagnostics on ctxMatchGame
+        int ctxQ468 = -1, ctxQ470 = -1, ctxL478 = -1, ctxL4B8 = -1;
+        if (validOffsetPtr(ctxMatchGame)) {
+            ctxQ468 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + 0x468));
+            ctxQ470 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + 0x470));
+            ctxL478 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + 0x478));
+            ctxL4B8 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + 0x4B8));
+        }
+
         int diagP128 = -1, diagP130 = -1, diagP158 = -1, diagP168 = -1, diagP2A0 = -1;
         if (validOffsetPtr(diagMatchObj)) {
             diagP128 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, diagMatchObj + kMatch_Players1));
@@ -1331,13 +1354,15 @@ NS_ASSUME_NONNULL_BEGIN
         }
 
         snprintf(diagBuf, sizeof(diagBuf),
-                 "match=0x%lx rep=0x%lx lrep=0x%lx ui=0x%lx bgStatic=0x%lx allEnt=0x%lx(%d) "
-                 "p128=%d p130=%d p158=%d p168=%d p2A0=%d",
-                 (unsigned long)diagMatchObj, (unsigned long)diagRepDict,
-                 (unsigned long)diagLRepDict, (unsigned long)diagUIScene,
-                 (unsigned long)diagBgStatics, (unsigned long)diagAllEnt,
+                 "ctx=0x%lx match=0x%lx rep=0x%lx allEnt=0x%lx(%d) "
+                 "ctxQ468=%d ctxQ470=%d ctxL478=%d ctxL4B8=%d "
+                 "p128=%d p130=%d p158=%d",
+                 (unsigned long)gameContext, (unsigned long)diagMatchObj,
+                 (unsigned long)diagRepDict,
+                 (unsigned long)diagAllEnt,
                  containerCount(diagAllEnt),
-                 diagP128, diagP130, diagP158, diagP168, diagP2A0);
+                 ctxQ468, ctxQ470, ctxL478, ctxL4B8,
+                 diagP128, diagP130, diagP158);
     }
 
     if (!validOffsetPtr(containerInfo.container)) {
