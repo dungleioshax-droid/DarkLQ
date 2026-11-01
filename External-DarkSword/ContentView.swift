@@ -8,15 +8,12 @@
 import SwiftUI
 
 enum AppTab: Int, CaseIterable {
-    case dashboard = 0
-    case games = 1
-    case logs = 2
-    case settings = 3
+    case games = 0
+    case logs = 1
+    case settings = 2
 
     func icon(isSelected: Bool) -> String {
         switch self {
-        case .dashboard:
-            return isSelected ? "bolt.shield.fill" : "bolt.shield"
         case .games:
             return isSelected ? "gamecontroller.fill" : "gamecontroller"
         case .logs:
@@ -28,8 +25,6 @@ enum AppTab: Int, CaseIterable {
 
     func title(_ language: AppLanguage) -> String {
         switch self {
-        case .dashboard:
-            return AppStrings.tabDashboard(language)
         case .games:
             return AppStrings.tabGames(language)
         case .logs:
@@ -45,7 +40,8 @@ struct ContentView: View {
     @AppStorage("ui.prefersDarkTheme") private var prefersDarkTheme = true
     @AppStorage("ui.prefersVietnamese") private var prefersVietnamese = true
 
-    @State private var selectedTab: AppTab = .dashboard
+    @State private var selectedTab: AppTab = .games
+    @State private var hasAutoInitialized = false
 
     private var palette: AppPalette {
         AppPalette(isDark: prefersDarkTheme)
@@ -63,17 +59,6 @@ struct ContentView: View {
             // Main Tab Content
             Group {
                 switch selectedTab {
-                case .dashboard:
-                    ExploitScreen(
-                        manager: manager,
-                        palette: palette,
-                        language: language,
-                        onContinue: {
-                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                                selectedTab = .games
-                            }
-                        }
-                    )
                 case .games:
                     GameListScreen(
                         manager: manager,
@@ -110,6 +95,14 @@ struct ContentView: View {
         }
         .preferredColorScheme(prefersDarkTheme ? .dark : .light)
         .tint(palette.accent)
+        .onAppear {
+            if !hasAutoInitialized {
+                hasAutoInitialized = true
+                if manager.kernelState == .idle {
+                    manager.initializeDarkSword()
+                }
+            }
+        }
     }
 }
 

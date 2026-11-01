@@ -104,63 +104,6 @@ struct SettingsScreen: View {
                     .padding(.horizontal, 18)
                 }
 
-                // MARK: - Advanced Kernel & RemoteCall Section
-                VStack(alignment: .leading, spacing: 10) {
-                    GlassSectionHeader(
-                        title: AppStrings.advancedSection(language),
-                        icon: "terminal.fill",
-                        palette: palette
-                    )
-                    .padding(.horizontal, 22)
-
-                    GlassCard(palette: palette, cornerRadius: 20) {
-                        VStack(spacing: 14) {
-                            // MIG Filter Bypass Toggle
-                            Toggle(isOn: $manager.useMigFilterBypass) {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(AppStrings.migBypassTitle(language))
-                                        .font(.system(size: 14, weight: .bold, design: .rounded))
-                                        .foregroundColor(palette.primaryText)
-
-                                    Text(AppStrings.migBypassDesc(language))
-                                        .font(.system(size: 11, weight: .medium))
-                                        .foregroundColor(palette.mutedText)
-                                }
-                            }
-                            .tint(palette.accent)
-
-                            Divider().background(palette.glassBorder)
-
-                            // Target Process
-                            HStack {
-                                Text(AppStrings.targetProcessTitle(language))
-                                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                                    .foregroundColor(palette.secondaryText)
-                                Spacer()
-                                Text(manager.targetProcess)
-                                    .font(.system(size: 13, weight: .bold, design: .monospaced))
-                                    .foregroundColor(palette.primaryText)
-                            }
-
-                            Divider().background(palette.glassBorder)
-
-                            // Overlay Socket Clients
-                            HStack {
-                                Text(AppStrings.socketClientsTitle(language))
-                                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                                    .foregroundColor(palette.secondaryText)
-                                Spacer()
-                                GlassBadge(
-                                    title: "\(manager.overlaySocketClientCount) Online",
-                                    color: manager.overlaySocketClientCount > 0 ? palette.success : palette.secondaryText,
-                                    palette: palette
-                                )
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 18)
-                }
-
                 // MARK: - About & Developer Card
                 VStack(alignment: .leading, spacing: 10) {
                     GlassSectionHeader(
@@ -223,7 +166,7 @@ struct SettingsScreen: View {
                                 )
                                 AboutRow(
                                     title: AppStrings.devName(language),
-                                    value: "Le Tien Dat",
+                                    value: "DLX07",
                                     palette: palette
                                 )
                             }

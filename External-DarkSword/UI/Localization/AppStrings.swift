@@ -14,7 +14,7 @@ enum AppLanguage: Equatable {
 
 enum AppStrings {
     static let appTitle = "External DarkSword"
-    static let developerCredit = "Develop by Le Tien Dat"
+    static let developerCredit = "Develop by DLX07"
     static let bundleIdentifier = "Bundle ID"
     static let ios = "iOS"
     static let kernelBase = "Kernel base"
