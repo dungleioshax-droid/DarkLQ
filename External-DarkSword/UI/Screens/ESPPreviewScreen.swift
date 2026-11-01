@@ -16,7 +16,6 @@ struct ESPPreviewScreen: View {
     @State private var selectedGameIndex = 0 // 0: AoV, 1: Free Fire
     @State private var simulatedDistance: Double = 28.0
 
-    // Bindings to DarkSwordManager properties depending on selected game
     private var isAoV: Bool {
         selectedGameIndex == 0
     }
@@ -86,6 +85,93 @@ struct ESPPreviewScreen: View {
         )
     }
 
+    // MARK: - Subviews for clean Swift compilation
+
+    @ViewBuilder
+    private func snaplineOverlay(geometry: GeometryProxy) -> some View {
+        if showsLine.wrappedValue {
+            Path { path in
+                let start = CGPoint(x: geometry.size.width / 2, y: 0)
+                let target = CGPoint(x: geometry.size.width / 2, y: geometry.size.height * 0.44)
+                path.move(to: start)
+                path.addLine(to: target)
+            }
+            .stroke(
+                Color(red: 1.0, green: 0.22, blue: 0.32),
+                style: StrokeStyle(lineWidth: 1.5, lineCap: .round)
+            )
+            .shadow(color: Color(red: 1.0, green: 0.22, blue: 0.32).opacity(0.8), radius: 4)
+
+            Circle()
+                .fill(Color(red: 1.0, green: 0.22, blue: 0.32))
+                .frame(width: 5, height: 5)
+                .position(x: geometry.size.width / 2, y: geometry.size.height * 0.44)
+        }
+    }
+
+    private var healthBarIndicator: some View {
+        HStack(spacing: 3) {
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Color.black.opacity(0.75))
+                    .frame(width: 72, height: 5)
+
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Color.green)
+                    .frame(width: 58, height: 5)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 2)
+                    .stroke(Color.black.opacity(0.8), lineWidth: 0.8)
+            )
+
+            Text(isAoV ? "3.4k" : "180")
+                .font(.system(size: 9, weight: .heavy, design: .monospaced))
+                .foregroundColor(.white)
+                .shadow(color: .black, radius: 1)
+        }
+    }
+
+    private var targetCharacterStack: some View {
+        VStack(spacing: 4) {
+            // Distance Tag
+            if showsDistance.wrappedValue {
+                Text(String(format: "[ %.0fm ]", simulatedDistance))
+                    .font(.system(size: 11, weight: .heavy, design: .monospaced))
+                    .foregroundColor(Color(red: 1.0, green: 0.95, blue: 0.25))
+                    .shadow(color: Color.black.opacity(0.9), radius: 2, x: 1, y: 1)
+            }
+
+            // Player Name Tag
+            if showsName.wrappedValue {
+                Text(isAoV ? "[Địch] Valhein" : "[Địch] Kelly_07")
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+                    .shadow(color: Color.black.opacity(0.9), radius: 2, x: 1, y: 1)
+            }
+
+            // Health Bar
+            if showsHealth.wrappedValue {
+                healthBarIndicator
+            }
+
+            // Character Figure + 2D Bounding Box
+            ZStack {
+                CharacterDummyGraphic(isAoV: isAoV, palette: palette)
+                    .frame(width: 80, height: 130)
+
+                if showsBox.wrappedValue {
+                    ESPBoundingBoxView()
+                        .frame(width: 88, height: 138)
+                }
+            }
+        }
+    }
+
+    private var scaleMultiplier: CGFloat {
+        max(0.65, min(1.25, 1.4 - CGFloat(simulatedDistance / 100.0) * 0.75))
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
@@ -104,7 +190,6 @@ struct ESPPreviewScreen: View {
 
                         Spacer()
 
-                        // Target Game Switcher Badge
                         GlassBadge(
                             title: isAoV ? "Liên Quân" : "Free Fire",
                             color: isAoV ? palette.accent : palette.accentPurple,
@@ -158,97 +243,14 @@ struct ESPPreviewScreen: View {
                             // Interactive Viewport Arena
                             GeometryReader { geometry in
                                 ZStack {
-                                    // Tactical Grid & Viewport Ambience
                                     TacticalGridBackground(palette: palette)
 
-                                    // Snapline from screen top center to character
-                                    if showsLine.wrappedValue {
-                                        Path { path in
-                                            let start = CGPoint(x: geometry.size.width / 2, y: 0)
-                                            let target = CGPoint(x: geometry.size.width / 2, y: geometry.size.height * 0.44)
-                                            path.move(to: start)
-                                            path.addLine(to: target)
-                                        }
-                                        .stroke(
-                                            Color(red: 1.0, green: 0.22, blue: 0.32),
-                                            style: StrokeStyle(lineWidth: 1.5, lineCap: .round)
-                                        )
-                                        .shadow(color: Color(red: 1.0, green: 0.22, blue: 0.32).opacity(0.8), radius: 4)
+                                    snaplineOverlay(geometry: geometry)
 
-                                        // Contact Point Dot
-                                        Circle()
-                                            .fill(Color(red: 1.0, green: 0.22, blue: 0.32))
-                                            .frame(width: 5, height: 5)
-                                            .position(x: geometry.size.width / 2, y: geometry.size.height * 0.44)
-                                    }
-
-                                    // Simulated Character Target with ESP Overlays
-                                    VStack(spacing: 4) {
-                                        // 1. Distance Tag (Yellow HUD)
-                                        if showsDistance.wrappedValue {
-                                            Text(String(format: "[ %.0fm ]", simulatedDistance))
-                                                .font(.system(size: 11, weight: .heavy, design: .monospaced))
-                                                .foregroundColor(Color(red: 1.0, green: 0.95, blue: 0.25))
-                                                .shadow(color: Color.black.opacity(0.9), radius: 2, x: 1, y: 1)
-                                        }
-
-                                        // 2. Player Name Tag
-                                        if showsName.wrappedValue {
-                                            Text(isAoV ? "[Địch] Valhein" : "[Địch] Kelly_07")
-                                                .font(.system(size: 12, weight: .bold, design: .rounded))
-                                                .foregroundColor(.white)
-                                                .shadow(color: Color.black.opacity(0.9), radius: 2, x: 1, y: 1)
-                                        }
-
-                                        // 3. Health Bar
-                                        if showsHealth.wrappedValue {
-                                            HStack(spacing: 2) {
-                                                GeometryReader { hpGeo in
-                                                    ZStack(alignment: .leading) {
-                                                        RoundedRectangle(cornerRadius: 2)
-                                                            .fill(Color.black.opacity(0.75))
-
-                                                        RoundedRectangle(cornerRadius: 2)
-                                                            .fill(
-                                                                LinearGradient(
-                                                                    colors: [Color.green, Color.yellow],
-                                                                    startPoint: .leading,
-                                                                    endPoint: .trailing
-                                                                )
-                                                            )
-                                                            .frame(width: hpGeo.size.width * 0.82)
-                                                    }
-                                                }
-                                                .frame(width: 76, height: 5)
-                                                .overlay(
-                                                    RoundedRectangle(cornerRadius: 2)
-                                                        .stroke(Color.black.opacity(0.8), lineWidth: 0.8)
-                                                )
-
-                                                Text(isAoV ? "3.4k" : "180")
-                                                    .font(.system(size: 9, weight: .heavy, design: .monospaced))
-                                                    .foregroundColor(.white)
-                                                    .shadow(color: .black, radius: 1)
-                                            }
-                                        }
-
-                                        // 4. Character Figure + 2D Bounding Box
-                                        ZStack {
-                                            // Character Silhouette & Stance
-                                            CharacterDummyGraphic(isAoV: isAoV, palette: palette)
-                                                .frame(width: 80, height: 130)
-
-                                            // 2D ESP Bounding Box
-                                            if showsBox.wrappedValue {
-                                                ESPBoundingBoxView()
-                                                    .frame(width: 88, height: 138)
-                                            }
-                                        }
-                                    }
-                                    // Scale character smoothly based on distance
-                                    .scaleEffect(max(0.65, min(1.25, 1.4 - (simulatedDistance / 100.0) * 0.75)))
-                                    .animation(.spring(response: 0.28, dampingFraction: 0.75), value: simulatedDistance)
-                                    .position(x: geometry.size.width / 2, y: geometry.size.height * 0.58)
+                                    targetCharacterStack
+                                        .scaleEffect(scaleMultiplier)
+                                        .animation(.spring(response: 0.28, dampingFraction: 0.75), value: simulatedDistance)
+                                        .position(x: geometry.size.width / 2, y: geometry.size.height * 0.58)
                                 }
                             }
                             .frame(height: 310)
@@ -334,12 +336,10 @@ private struct ESPBoundingBoxView: View {
 
     var body: some View {
         ZStack {
-            // Full semi-transparent border
             RoundedRectangle(cornerRadius: 4)
                 .stroke(boxColor.opacity(0.85), lineWidth: 1.5)
                 .shadow(color: boxColor.opacity(0.6), radius: 3)
 
-            // Accent Corner Brackets for authentic game ESP look
             GeometryReader { geo in
                 let w = geo.size.width
                 let h = geo.size.height
@@ -377,78 +377,67 @@ private struct CharacterDummyGraphic: View {
     let isAoV: Bool
     let palette: AppPalette
 
-    private var auraColor: Color {
-        (isAoV ? palette.accent : palette.accentPurple).opacity(0.25)
+    private var auraView: some View {
+        let auraColor = (isAoV ? palette.accent : palette.accentPurple).opacity(0.25)
+        return Capsule()
+            .fill(
+                RadialGradient(
+                    gradient: Gradient(colors: [auraColor, Color.clear]),
+                    center: .center,
+                    startRadius: 5,
+                    endRadius: 55
+                )
+            )
+            .frame(width: 80, height: 120)
     }
 
-    private var visorColor: Color {
-        isAoV ? palette.accent : Color.red
+    private var headView: some View {
+        let visorColor = isAoV ? palette.accent : Color.red
+        return Circle()
+            .fill(palette.primaryText.opacity(0.8))
+            .frame(width: 24, height: 24)
+            .overlay(
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(visorColor)
+                    .frame(width: 14, height: 4)
+                    .offset(y: -1)
+            )
+    }
+
+    private var torsoView: some View {
+        RoundedRectangle(cornerRadius: 6)
+            .fill(palette.secondaryText.opacity(0.7))
+            .frame(width: 38, height: 48)
+            .overlay(
+                VStack(spacing: 3) {
+                    Rectangle()
+                        .fill(palette.accent.opacity(0.6))
+                        .frame(width: 20, height: 2)
+                    Image(systemName: isAoV ? "shield.fill" : "cross.fill")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(palette.primaryText.opacity(0.7))
+                }
+            )
+    }
+
+    private var legsView: some View {
+        HStack(spacing: 8) {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(palette.secondaryText.opacity(0.7))
+                .frame(width: 12, height: 44)
+            RoundedRectangle(cornerRadius: 4)
+                .fill(palette.secondaryText.opacity(0.7))
+                .frame(width: 12, height: 44)
+        }
     }
 
     var body: some View {
         ZStack {
-            // Tactical Body Aura
-            Capsule()
-                .fill(
-                    RadialGradient(
-                        gradient: Gradient(colors: [auraColor, Color.clear]),
-                        center: .center,
-                        startRadius: 5,
-                        endRadius: 55
-                    )
-                )
-                .frame(width: 80, height: 120)
-
-            // Stylized Tactical Character Silhouette
+            auraView
             VStack(spacing: 2) {
-                // Head / Helmet
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            gradient: Gradient(colors: [palette.primaryText.opacity(0.85), palette.secondaryText.opacity(0.6)]),
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .frame(width: 24, height: 24)
-                    .overlay(
-                        // Visor Glow
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(visorColor)
-                            .frame(width: 14, height: 4)
-                            .offset(y: -1)
-                    )
-
-                // Torso & Tactical Armor
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(
-                        LinearGradient(
-                            gradient: Gradient(colors: [palette.secondaryText.opacity(0.75), palette.glassBorderHighlight.opacity(0.5)]),
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .frame(width: 38, height: 48)
-                    .overlay(
-                        VStack(spacing: 3) {
-                            Rectangle()
-                                .fill(palette.accent.opacity(0.6))
-                                .frame(width: 20, height: 2)
-                            Image(systemName: isAoV ? "shield.fill" : "cross.fill")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(palette.primaryText.opacity(0.7))
-                        }
-                    )
-
-                // Legs / Stance
-                HStack(spacing: 8) {
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(palette.secondaryText.opacity(0.7))
-                        .frame(width: 12, height: 44)
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(palette.secondaryText.opacity(0.7))
-                        .frame(width: 12, height: 44)
-                }
+                headView
+                torsoView
+                legsView
             }
             .shadow(color: Color.black.opacity(0.5), radius: 6, x: 0, y: 4)
         }
@@ -461,17 +450,8 @@ private struct TacticalGridBackground: View {
 
     var body: some View {
         ZStack {
-            // Dark Arena Canvas
-            LinearGradient(
-                colors: [
-                    Color(red: 0.04, green: 0.05, blue: 0.08),
-                    Color(red: 0.08, green: 0.10, blue: 0.15)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
+            Color(red: 0.05, green: 0.06, blue: 0.09)
 
-            // Radar Circle Concentric Rings
             Circle()
                 .stroke(Color.white.opacity(0.04), lineWidth: 1)
                 .frame(width: 180, height: 180)
@@ -480,7 +460,6 @@ private struct TacticalGridBackground: View {
                 .stroke(Color.white.opacity(0.03), lineWidth: 1)
                 .frame(width: 280, height: 280)
 
-            // Center Crosshair
             Path { path in
                 path.move(to: CGPoint(x: 20, y: 155))
                 path.addLine(to: CGPoint(x: 340, y: 155))
