@@ -98,8 +98,32 @@ static bool ReadValidMatrix(RemoteCall *remoteCall, uintptr_t address,
 static bool LooksLikeViewProjection(const float *matrix) {
     if (!matrix)
         return false;
-    return fabsf(matrix[11]) > 0.01f || fabsf(matrix[14]) > 0.01f ||
-           fabsf(matrix[15]) < 0.95f;
+
+    for (int i = 0; i < 16; ++i) {
+        if (!std::isfinite(matrix[i]) || fabsf(matrix[i]) > 100000.0f)
+            return false;
+    }
+
+    // In Unity column-major ViewProjection matrix:
+    // w = matrix[3]*x + matrix[7]*y + matrix[11]*z + matrix[15]
+    // The forward direction vector (matrix[3], matrix[7], matrix[11]) in world space
+    // MUST have length squared approximately 1.0 (typically 0.3 to 3.5).
+    float colForwardLenSq = matrix[3] * matrix[3] +
+                            matrix[7] * matrix[7] +
+                            matrix[11] * matrix[11];
+
+    // Row-major transpose check just in case:
+    float rowForwardLenSq = matrix[12] * matrix[12] +
+                            matrix[13] * matrix[13] +
+                            matrix[14] * matrix[14];
+
+    bool validCol = (colForwardLenSq > 0.3f && colForwardLenSq < 3.5f);
+    bool validRow = (rowForwardLenSq > 0.3f && rowForwardLenSq < 3.5f);
+
+    if (!validCol && !validRow)
+        return false;
+
+    return true;
 }
 
 // Native camera matrix offsets drift between Unity builds; remember the ones
@@ -112,29 +136,26 @@ static bool gFreeFireNativeCameraOffsetsResolved = false;
 
 static bool ReadCameraVPAndWorldMatrix(RemoteCall *remoteCall, uintptr_t camera,
                                       float *outVP, float *outView) {
-    if (!validOffsetPtr(camera) || !remoteCall || !outVP)
+    if (!validOffsetPtr(camera) || !checkPointer64bits(camera) || !remoteCall || !outVP)
         return false;
 
     camera = CleanPointer(camera);
 
     uintptr_t nativeCamera = CleanPointer(
         ReadMemorySafe<uintptr_t>(remoteCall, camera + kUnityObject_CachedPtr));
-    if (!validOffsetPtr(nativeCamera)) {
+    if (!validOffsetPtr(nativeCamera) || !checkPointer64bits(nativeCamera)) {
         nativeCamera =
             CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, camera + 0x8));
-        if (!validOffsetPtr(nativeCamera)) {
+        if (!validOffsetPtr(nativeCamera) || !checkPointer64bits(nativeCamera)) {
             nativeCamera = CleanPointer(
                 ReadMemorySafe<uintptr_t>(remoteCall, camera + 0x18));
-            if (!validOffsetPtr(nativeCamera)) {
+            if (!validOffsetPtr(nativeCamera) || !checkPointer64bits(nativeCamera)) {
                 nativeCamera = CleanPointer(
                     ReadMemorySafe<uintptr_t>(remoteCall, camera + 0x20));
-                if (!validOffsetPtr(nativeCamera)) {
-                    nativeCamera = camera;
-                }
             }
         }
     }
-    if (!validOffsetPtr(nativeCamera))
+    if (!validOffsetPtr(nativeCamera) || !checkPointer64bits(nativeCamera))
         return false;
 
     // Try the offsets that worked before (or the dump defaults) first.
@@ -176,6 +197,12 @@ static bool ReadCameraVPAndWorldMatrix(RemoteCall *remoteCall, uintptr_t camera,
             return false;
         if (!LooksLikeViewProjection(viewProjection))
             return false;
+        // In a true WorldToClip matrix, it contains camera rotation/position.
+        // If matrix[3] == 0 && matrix[7] == 0 && matrix[15] == 0, it is pure projection, NOT WorldToClip!
+        if (fabsf(viewProjection[3]) < 1e-4f && fabsf(viewProjection[7]) < 1e-4f &&
+            fabsf(viewProjection[15]) < 1e-4f) {
+            return false;
+        }
         memcpy(outVP, viewProjection, sizeof(viewProjection));
         if (outView) {
             if (!ReadValidMatrix(remoteCall,
@@ -204,12 +231,10 @@ static bool ReadCameraVPAndWorldMatrix(RemoteCall *remoteCall, uintptr_t camera,
     }
 
     // Fast consecutive matrix block discovery (m_WorldToCamera, m_Projection, m_WorldToClip)
-    for (uint64_t baseOff = 0x40; baseOff <= 0x200; baseOff += 0x8) {
+    for (uint64_t baseOff = 0x50; baseOff <= 0x120; baseOff += 0x8) {
         if (tryViewProjection(baseOff, baseOff + 0x40))
             return true;
         if (tryWorldToClip(baseOff + 0x80))
-            return true;
-        if (tryWorldToClip(baseOff))
             return true;
     }
 
@@ -991,23 +1016,43 @@ static uintptr_t ResolveBaseGameAllEntities(RemoteCall *remoteCall, uintptr_t ga
 }
 
 static bool FieldHoldsCamera(RemoteCall *remoteCall, uintptr_t value) {
-    return Il2CppClassNameContains(remoteCall, value, "Camera");
+    if (!validOffsetPtr(value) || !checkPointer64bits(value))
+        return false;
+    char name[64] = {0};
+    if (ReadIl2CppClassName(remoteCall, value, name, sizeof(name))) {
+        if (strstr(name, "Camera") != NULL)
+            return true;
+    }
+    uintptr_t cachedPtr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, value + kUnityObject_CachedPtr));
+    if (validOffsetPtr(cachedPtr) && checkPointer64bits(cachedPtr)) {
+        if (name[0] != '\0' && (strstr(name, "Cam") != NULL || strstr(name, "Scene") != NULL))
+            return true;
+    }
+    return false;
 }
 
 // A camera manager either carries its type in the class name or owns a
 // UnityEngine.Camera reference in one of its first fields.
 static bool LooksLikeCameraManager(RemoteCall *remoteCall, uintptr_t object) {
-    if (!validOffsetPtr(object))
+    if (!validOffsetPtr(object) || !checkPointer64bits(object))
         return false;
 
-    if (Il2CppClassNameContains(remoteCall, object, "CameraController"))
+    if (Il2CppClassNameContains(remoteCall, object, "CameraController") ||
+        Il2CppClassNameContains(remoteCall, object, "CameraManager"))
         return true;
 
-    for (uint64_t offset = 0x10; offset <= 0x60;
-         offset += sizeof(uintptr_t)) {
-        uintptr_t value =
-            ReadMemorySafe<uintptr_t>(remoteCall, object + offset);
-        if (!validOffsetPtr(value))
+    // Check primary camera fields at 0x20 and 0x28 first
+    uintptr_t cam1 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, object + 0x20));
+    if (validOffsetPtr(cam1) && checkPointer64bits(cam1) && FieldHoldsCamera(remoteCall, cam1))
+        return true;
+
+    uintptr_t cam2 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, object + 0x28));
+    if (validOffsetPtr(cam2) && checkPointer64bits(cam2) && FieldHoldsCamera(remoteCall, cam2))
+        return true;
+
+    for (uint64_t offset = 0x10; offset <= 0x60; offset += sizeof(uintptr_t)) {
+        uintptr_t value = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, object + offset));
+        if (!validOffsetPtr(value) || !checkPointer64bits(value))
             continue;
         if (FieldHoldsCamera(remoteCall, value))
             return true;
