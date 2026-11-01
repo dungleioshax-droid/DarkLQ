@@ -61,7 +61,7 @@ static inline T ReadMemorySafe(RemoteCall *remoteCall, uintptr_t addr,
     if (!remoteCall || addr == 0) {
         return defaultValue;
     }
-    uintptr_t cleanAddr = CleanPointer(addr);
+    uintptr_t cleanAddr = addr & 0x7fffffffffULL;
     if (!isAlignedAddr<T>(cleanAddr)) {
         return defaultValue;
     }

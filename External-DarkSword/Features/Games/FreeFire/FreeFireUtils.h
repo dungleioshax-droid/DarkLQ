@@ -80,7 +80,7 @@ static bool ReadValidMatrix(RemoteCall *remoteCall, uintptr_t address,
                             float *out) {
     if (!validOffsetPtr(address) || !out || !remoteCall)
         return false;
-    address = CleanPointer(address);
+    address = address & 0x7fffffffffULL;
     if (![remoteCall remoteRead:address to:out size:sizeof(float) * 16])
         return false;
 
@@ -107,7 +107,7 @@ static bool LooksLikeViewProjection(const float *matrix) {
     // In Unity column-major ViewProjection matrix:
     // w = matrix[3]*x + matrix[7]*y + matrix[11]*z + matrix[15]
     // The forward direction vector (matrix[3], matrix[7], matrix[11]) in world space
-    // MUST have length squared approximately 1.0 (typically 0.3 to 3.5).
+    // MUST have length squared approximately 1.0 (typically 0.01 to 25.0).
     float colForwardLenSq = matrix[3] * matrix[3] +
                             matrix[7] * matrix[7] +
                             matrix[11] * matrix[11];
@@ -117,8 +117,8 @@ static bool LooksLikeViewProjection(const float *matrix) {
                             matrix[13] * matrix[13] +
                             matrix[14] * matrix[14];
 
-    bool validCol = (colForwardLenSq > 0.05f && colForwardLenSq < 15.0f);
-    bool validRow = (rowForwardLenSq > 0.05f && rowForwardLenSq < 15.0f);
+    bool validCol = (colForwardLenSq > 0.01f && colForwardLenSq < 25.0f);
+    bool validRow = (rowForwardLenSq > 0.01f && rowForwardLenSq < 25.0f);
 
     if (!validCol && !validRow)
         return false;
@@ -294,8 +294,8 @@ static Vector3 GetPositionExt(RemoteCall *remoteCall, uintptr_t transObj2) {
     }
 
     uintptr_t matrix = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, transObj + 0x38));
-    uint64_t index = ReadMemorySafe<uint64_t>(remoteCall, transObj + 0x40);
-    if (!validOffsetPtr(matrix) || index > 50000)
+    int32_t index = ReadMemorySafe<int32_t>(remoteCall, transObj + 0x40);
+    if (!validOffsetPtr(matrix) || index < 0 || index > 50000)
         return Vector3::zero();
 
     uintptr_t matrix_list = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, matrix + 0x18));
@@ -474,21 +474,34 @@ static NSString *ReadIl2CppString(RemoteCall *remoteCall, uintptr_t stringAddr) 
     if (!validOffsetPtr(stringAddr) || !remoteCall)
         return @"";
 
+    stringAddr = CleanPointer(stringAddr);
+
     int32_t length =
         ReadMemorySafe<int32_t>(remoteCall, stringAddr + kSystemString_Length);
-    if (length <= 0 || length > 128)
-        return @"";
-
-    uint16_t buffer[129] = {0};
-    size_t readBytes = length * sizeof(uint16_t);
-    if (![remoteCall remoteRead:stringAddr + kSystemString_Chars
-                             to:buffer
-                           size:readBytes]) {
-        return @"";
+    if (length > 0 && length <= 128) {
+        uint16_t buffer[129] = {0};
+        size_t readBytes = (size_t)length * sizeof(uint16_t);
+        if ([remoteCall remoteRead:stringAddr + kSystemString_Chars
+                                 to:buffer
+                               size:readBytes]) {
+            buffer[length] = 0;
+            return [NSString stringWithCharacters:buffer length:length];
+        }
     }
 
-    buffer[length] = 0;
-    return [NSString stringWithCharacters:buffer length:length];
+    // Direct UTF16 fallback (Fl0rk pattern: read chars at stringAddr + 0x14)
+    uint16_t rawBuf[32] = {0};
+    if ([remoteCall remoteRead:stringAddr + kSystemString_Chars to:rawBuf size:sizeof(rawBuf)]) {
+        size_t rawLen = 0;
+        while (rawLen < 31 && rawBuf[rawLen] != 0 && rawBuf[rawLen] >= 0x20 && rawBuf[rawLen] < 0xD800) {
+            ++rawLen;
+        }
+        if (rawLen > 0) {
+            return [NSString stringWithCharacters:rawBuf length:rawLen];
+        }
+    }
+
+    return @"";
 }
 
 // MARK: - Il2Cpp Object Introspection
@@ -876,7 +889,7 @@ static inline bool InspectEntityContainer(RemoteCall *remoteCall, uintptr_t cand
     int32_t directArrLen = ReadMemorySafe<int32_t>(remoteCall, cand + kArray_Length);
     if (directArrLen > 0 && directArrLen <= 2000) {
         uintptr_t bounds = ReadMemorySafe<uintptr_t>(remoteCall, cand + 0x10);
-        if (bounds == 0) {
+        if (bounds == 0 || validOffsetPtr(bounds)) {
             outContainer->container = cand;
             outContainer->containerType = kContainerType_Array;
             outContainer->isList = true;
@@ -959,6 +972,22 @@ static bool LooksLikeMatchObject(RemoteCall *remoteCall, uintptr_t matchObj) {
         return false;
     matchObj = CleanPointer(matchObj);
 
+    // 1. Fl0rk reference match container check at 0xC8 -> + 0x28
+    uintptr_t florkC8 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, matchObj + kMatch_C8));
+    if (validOffsetPtr(florkC8)) {
+        uintptr_t florkArr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, florkC8 + kMatch_C8_Array));
+        if (validOffsetPtr(florkArr)) {
+            int32_t len = ReadMemorySafe<int32_t>(remoteCall, florkArr + kArray_Length);
+            if (len >= 0 && len <= 2000) return true;
+        }
+    }
+
+    // 2. Fl0rk local player check at 0x58
+    uintptr_t localPlayer = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, matchObj + kMatch_LocalPlayer));
+    if (validOffsetPtr(localPlayer)) {
+        return true;
+    }
+
     static const uint64_t kShapedOffsets[] = {
         kMatch_Players1, kMatch_Players2, kMatch_Players3, kMatch_Players4,
         kMatch_Players5, kMatch_PlayerList1, kMatch_PlayerList2,
@@ -975,7 +1004,7 @@ static bool LooksLikeMatchObject(RemoteCall *remoteCall, uintptr_t matchObj) {
         FreeFireEntityContainer info;
         if (InspectEntityContainer(remoteCall, cand, &info))
             ++shaped;
-        if (shaped >= 3)
+        if (shaped >= 1)
             return true;
     }
     return false;
@@ -1001,16 +1030,21 @@ static bool FieldHoldsMatchGame(RemoteCall *remoteCall, uintptr_t value) {
     if (IsSubclassOf(remoteCall, value, "MatchGame"))
         return true;
 
-    // Structural validation fallback. Require a real m_Match object plus a
-    // second MatchGame-shaped field, so a FrontEndGame cannot pass by itself.
-    uintptr_t matchObj = CleanPointer(
-        ReadMemorySafe<uintptr_t>(remoteCall, value + kMatchGame_Match));
-    if (!LooksLikeMatchObject(remoteCall, matchObj))
-        return false;
-
+    // Structural validation fallback. Check CameraControllerManager at 0xD8 first (Fl0rk pattern)
     uintptr_t camMgr = CleanPointer(
         ReadMemorySafe<uintptr_t>(remoteCall, value + kMatchGame_CameraControllerManager));
-    if (validOffsetPtr(camMgr) && LooksLikeCameraManager(remoteCall, camMgr))
+    if (validOffsetPtr(camMgr)) {
+        if (LooksLikeCameraManager(remoteCall, camMgr)) return true;
+        uintptr_t c0 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, camMgr + kCameraControllerManager_CameraMain));
+        if (validOffsetPtr(c0) && checkPointer64bits(c0)) return true;
+        uintptr_t c1 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, camMgr + kCameraControllerManager_MainCamera));
+        if (validOffsetPtr(c1) && checkPointer64bits(c1)) return true;
+    }
+
+    // Check m_Match object at 0x90
+    uintptr_t matchObj = CleanPointer(
+        ReadMemorySafe<uintptr_t>(remoteCall, value + kMatchGame_Match));
+    if (LooksLikeMatchObject(remoteCall, matchObj))
         return true;
 
     uintptr_t repDict = CleanPointer(

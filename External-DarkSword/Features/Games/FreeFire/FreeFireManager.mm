@@ -547,10 +547,10 @@ NS_ASSUME_NONNULL_BEGIN
     // scanning the whole block, which starts at 0x00 (no object header).
     matchGameOffset = gFreeFireMatchGameFieldOffset != 0
                           ? gFreeFireMatchGameFieldOffset
-                          : kGameFacadeStatic_CurrentMatchGame;
+                          : kGameFacadeStatic_CurrentGame;
     const uint64_t dumpSlots[] = {
-        kGameFacadeStatic_CurrentMatchGame,
-        kGameFacadeStatic_CurrentGame
+        kGameFacadeStatic_CurrentGame,       // 0x00 (Fl0rk reference path)
+        kGameFacadeStatic_CurrentMatchGame   // 0x08
     };
     for (int s = 0; s < 2 && matchGame == 0; ++s) {
         uintptr_t value =
@@ -572,8 +572,13 @@ NS_ASSUME_NONNULL_BEGIN
     }
 
     if (matchGame == 0) {
-        matchGame = ReadMemorySafe<uintptr_t>(remoteCall,
-                                              staticFields + matchGameOffset);
+        uintptr_t cg = ReadMemorySafe<uintptr_t>(remoteCall, staticFields + kGameFacadeStatic_CurrentGame);
+        if (validOffsetPtr(cg)) {
+            matchGame = cg;
+            matchGameOffset = kGameFacadeStatic_CurrentGame;
+        } else {
+            matchGame = ReadMemorySafe<uintptr_t>(remoteCall, staticFields + matchGameOffset);
+        }
     }
 
     gFreeFireMatchGameFieldOffset = matchGameOffset;
@@ -707,11 +712,17 @@ NS_ASSUME_NONNULL_BEGIN
     for (uintptr_t g : { currentMatchGame, ctxMatchGame }) {
         if (!validOffsetPtr(g) || !checkPointer64bits(g)) continue;
         uintptr_t mgr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, g + kMatchGame_CameraControllerManager));
-        if (validOffsetPtr(mgr) && checkManager(mgr)) goto found;
+        if (validOffsetPtr(mgr)) {
+            if (checkManager(mgr)) goto found;
+            if (testCandidateCamera(mgr, g)) goto found;
+        }
 
         for (uint64_t off = 0x80; off <= 0x140; off += sizeof(uintptr_t)) {
             uintptr_t candMgr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, g + off));
-            if (validOffsetPtr(candMgr) && checkManager(candMgr)) goto found;
+            if (validOffsetPtr(candMgr)) {
+                if (checkManager(candMgr)) goto found;
+                if (testCandidateCamera(candMgr, g)) goto found;
+            }
         }
     }
 
