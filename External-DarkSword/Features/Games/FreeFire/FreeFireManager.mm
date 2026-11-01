@@ -651,8 +651,7 @@ NS_ASSUME_NONNULL_BEGIN
     ctxMatchGame = CleanPointer(ctxMatchGame);
 
     // Strategy 0: Test cached camera if still valid and confirmed to hold Camera
-    if (validOffsetPtr(self.cachedCamera) && checkPointer64bits(self.cachedCamera) &&
-        FieldHoldsCamera(remoteCall, self.cachedCamera)) {
+    if (validOffsetPtr(self.cachedCamera) && checkPointer64bits(self.cachedCamera)) {
         float testVP[16] = {}, testView[16] = {};
         if (ReadCameraVPAndWorldMatrix(remoteCall, self.cachedCamera, testVP, testView)) {
             if (outCamera) *outCamera = self.cachedCamera;
@@ -673,7 +672,6 @@ NS_ASSUME_NONNULL_BEGIN
     auto testCandidateCamera = [&](uintptr_t candCam, uintptr_t mgr) -> bool {
         candCam = CleanPointer(candCam);
         if (!validOffsetPtr(candCam) || !checkPointer64bits(candCam)) return false;
-        if (!FieldHoldsCamera(remoteCall, candCam)) return false;
         float testVP[16] = {}, testView[16] = {};
         if (!ReadCameraVPAndWorldMatrix(remoteCall, candCam, testVP, testView)) return false;
         camera = candCam;
@@ -684,43 +682,36 @@ NS_ASSUME_NONNULL_BEGIN
     auto checkManager = [&](uintptr_t mgr) -> bool {
         mgr = CleanPointer(mgr);
         if (!validOffsetPtr(mgr) || !checkPointer64bits(mgr)) return false;
-        if (!LooksLikeCameraManager(remoteCall, mgr)) return false;
 
-        // Try primary camera at 0x20 (EKIPKGNKILM) first
+        // 1. Try Fl0rk cameraMain at 0x18 first
+        uintptr_t c0 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, mgr + kCameraControllerManager_CameraMain));
+        if (testCandidateCamera(c0, mgr)) return true;
+
+        // 2. Try primary camera at 0x20 (EKIPKGNKILM)
         uintptr_t c1 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, mgr + kCameraControllerManager_MainCamera));
         if (testCandidateCamera(c1, mgr)) return true;
 
-        // Try secondary camera at 0x28 (LBHAFMEPGCO)
+        // 3. Try secondary camera at 0x28 (LBHAFMEPGCO)
         uintptr_t c2 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, mgr + kCameraControllerManager_SubCamera));
         if (testCandidateCamera(c2, mgr)) return true;
 
         // Scan any other pointers in mgr
-        for (uint64_t off = 0x10; off <= 0x60; off += sizeof(uintptr_t)) {
+        for (uint64_t off = 0x10; off <= 0x80; off += sizeof(uintptr_t)) {
             uintptr_t c = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, mgr + off));
             if (testCandidateCamera(c, mgr)) return true;
         }
         return false;
     };
 
-    // Strategy 1: Check CameraControllerManager in ctxMatchGame (Training Ground / Custom Match)
-    if (validOffsetPtr(ctxMatchGame) && checkPointer64bits(ctxMatchGame)) {
-        uintptr_t mgr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + kMatchGame_CameraControllerManager));
-        if (checkManager(mgr)) goto found;
+    // Strategy 1: Check CameraControllerManager at 0xD8 (Fl0rk reference path)
+    for (uintptr_t g : { currentMatchGame, ctxMatchGame }) {
+        if (!validOffsetPtr(g) || !checkPointer64bits(g)) continue;
+        uintptr_t mgr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, g + kMatchGame_CameraControllerManager));
+        if (validOffsetPtr(mgr) && checkManager(mgr)) goto found;
 
         for (uint64_t off = 0x80; off <= 0x140; off += sizeof(uintptr_t)) {
-            uintptr_t candMgr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + off));
-            if (checkManager(candMgr)) goto found;
-        }
-    }
-
-    // Strategy 2: Check CameraControllerManager in currentMatchGame (Standard Match: BR / CS)
-    if (validOffsetPtr(currentMatchGame) && checkPointer64bits(currentMatchGame)) {
-        uintptr_t mgr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kMatchGame_CameraControllerManager));
-        if (checkManager(mgr)) goto found;
-
-        for (uint64_t off = 0x80; off <= 0x140; off += sizeof(uintptr_t)) {
-            uintptr_t candMgr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + off));
-            if (checkManager(candMgr)) goto found;
+            uintptr_t candMgr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, g + off));
+            if (validOffsetPtr(candMgr) && checkManager(candMgr)) goto found;
         }
     }
 
@@ -928,6 +919,13 @@ found:
         // m_Match on ctxMatchGame
         uintptr_t ctxMatchObj = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + kMatchGame_Match));
         if (validOffsetPtr(ctxMatchObj)) {
+            uintptr_t florkC8 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchObj + kMatch_C8));
+            if (validOffsetPtr(florkC8)) {
+                uintptr_t florkArr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, florkC8 + kMatch_C8_Array));
+                consider(florkArr);
+                consider(florkC8);
+            }
+
             const uint64_t matchOffsets[] = {
                 kMatch_Players1, kMatch_Players2, kMatch_Players3, kMatch_Players4, kMatch_Players5,
                 kMatch_PlayerList1, kMatch_PlayerList2, kMatch_AIPawns, kMatch_Teams, kMatch_Vehicles, kMatch_Containers,
@@ -1011,6 +1009,14 @@ found:
         }
 
         if (validOffsetPtr(matchObj)) {
+            // Fl0rk reference match container: match + 0xC8 -> + 0x28
+            uintptr_t florkC8 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, matchObj + kMatch_C8));
+            if (validOffsetPtr(florkC8)) {
+                uintptr_t florkArr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, florkC8 + kMatch_C8_Array));
+                consider(florkArr);
+                consider(florkC8);
+            }
+
             const uint64_t matchOffsets[] = {
                 kMatch_Players1, kMatch_Players2, kMatch_Players3, kMatch_Players4, kMatch_Players5,
                 kMatch_PlayerList1, kMatch_PlayerList2, kMatch_AIPawns, kMatch_Teams, kMatch_Vehicles, kMatch_Containers,
@@ -1295,10 +1301,27 @@ found:
     // Camera world position (origin of camera in 3D)
     Vector3 cameraPos = GetCameraPositionFromViewMatrix(viewMatrix);
 
-    // Local player identification (by user ID)
+    // Local player identification (by user ID and Fl0rk getLocalPlayer)
     uint64_t localUserID = ReadMemorySafe<uint64_t>(
         remoteCall, staticFields + kGameFacadeStatic_LocalPlayerUserID);
     uint32_t hostTeamID = 0;
+    uint8_t hostPlayerStructTeam = 0;
+
+    // Fl0rk getLocalPlayer from match + 0x58
+    uintptr_t localPlayerPawn = 0;
+    uintptr_t curMatchObj = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kMatchGame_Match));
+    if (!validOffsetPtr(curMatchObj) && validOffsetPtr(ctxMatchGame)) {
+        curMatchObj = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + kMatchGame_Match));
+    }
+    if (validOffsetPtr(curMatchObj)) {
+        localPlayerPawn = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, curMatchObj + kMatch_LocalPlayer));
+        if (validOffsetPtr(localPlayerPawn)) {
+            hostPlayerStructTeam = ReadMemorySafe<uint8_t>(remoteCall, localPlayerPawn + kPlayer_PlayerIDStruct + 0x8);
+            if (hostTeamID == 0) {
+                hostTeamID = ReadMemorySafe<uint32_t>(remoteCall, localPlayerPawn + kPlayer_TeamModeID);
+            }
+        }
+    }
 
     // 5. Read Entities from MatchGame or BaseGame or UIScene
     FreeFireEntityContainer containerInfo = [self resolveEntityContainer:remoteCall
@@ -1450,6 +1473,8 @@ found:
         ++scannedCount;
 
         // Skip local player
+        if (localPlayerPawn != 0 && entity == localPlayerPawn)
+            continue;
         if (localUserID != 0) {
             uint64_t uid = ReadMemorySafe<uint64_t>(
                 remoteCall, entity + kPlayer_UserID);
@@ -1517,28 +1542,83 @@ found:
             ++teamSkipped;
             continue;
         }
-
-        // Read Position using Pure Memory Reads
-        Vector3 pos = Vector3::zero();
-        if (!ReadEntityPosition(remoteCall, entity, &pos)) {
-            ++positionFailures;
+        uint8_t playerStructTeam = ReadMemorySafe<uint8_t>(remoteCall, entity + kPlayer_PlayerIDStruct + 0x8);
+        if (hostPlayerStructTeam != 0 && playerStructTeam == hostPlayerStructTeam) {
+            ++teamSkipped;
             continue;
         }
 
+        // Read Position using Fl0rk getPositionExt and bones
+        Vector3 headPos = Vector3::zero();
+        Vector3 footPos = Vector3::zero();
+        uintptr_t headBodyPart = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entity + kPlayer_HeadBodyPart)); // 0x550
+        if (validOffsetPtr(headBodyPart)) {
+            uintptr_t headTrans = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, headBodyPart + 0x10));
+            headPos = GetPositionExt(remoteCall, headTrans);
+        }
+
+        uintptr_t toeBodyPart = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entity + kPlayer_RightToeBodyPart)); // 0x5A0
+        if (validOffsetPtr(toeBodyPart)) {
+            uintptr_t toeTrans = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, toeBodyPart + 0x10));
+            footPos = GetPositionExt(remoteCall, toeTrans);
+        }
+
+        BOOL hasBones = (headPos.x != 0.0f || headPos.y != 0.0f || headPos.z != 0.0f) &&
+                        (footPos.x != 0.0f || footPos.y != 0.0f || footPos.z != 0.0f);
+
+        Vector3 pos = Vector3::zero();
+        Vector3 headWorld = Vector3::zero();
+        Vector3 footWorld = Vector3::zero();
+
+        if (hasBones) {
+            headPos.y += 0.2f; // Fl0rk head offset
+            pos = footPos;
+            headWorld = headPos;
+            footWorld = footPos;
+        } else {
+            if (!ReadEntityPosition(remoteCall, entity, &pos)) {
+                ++positionFailures;
+                continue;
+            }
+            headWorld = Vector3(pos.x, pos.y + 1.8f, pos.z);
+            footWorld = Vector3(pos.x, pos.y + 0.1f, pos.z);
+        }
+
         // Read Name
-        uintptr_t nameStr = ReadMemorySafe<uintptr_t>(
-            remoteCall, entity + kPlayer_OriginalNickName);
+        uintptr_t nameStr = CleanPointer(ReadMemorySafe<uintptr_t>(
+            remoteCall, entity + kPlayer_OriginalNickName));
         NSString *playerName = ReadIl2CppString(remoteCall, nameStr);
+        if (playerName.length == 0) {
+            uintptr_t nameStr358 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entity + kPlayer_NickName358));
+            playerName = ReadIl2CppString(remoteCall, nameStr358);
+        }
         if (playerName.length == 0) {
             playerName = [NSString stringWithUTF8String:className];
         }
 
+        // Read HP via Fl0rk IPRIDataPool
+        int curHP = 200, maxHP = 200;
+        uintptr_t ipriPool = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entity + kPlayer_IPRIDataPool)); // 0x68
+        if (validOffsetPtr(ipriPool)) {
+            uintptr_t v2 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ipriPool + 0x10));
+            if (validOffsetPtr(v2)) {
+                uintptr_t v4_0 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, v2 + 0x20)); // varID 0 = CurHP
+                uintptr_t v4_1 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, v2 + 0x28)); // varID 1 = MaxHP
+                if (validOffsetPtr(v4_0)) {
+                    int hp = ReadMemorySafe<int>(remoteCall, v4_0 + 0x18);
+                    if (hp >= 0 && hp <= 1000) curHP = hp;
+                }
+                if (validOffsetPtr(v4_1)) {
+                    int maxH = ReadMemorySafe<int>(remoteCall, v4_1 + 0x18);
+                    if (maxH > 0 && maxH <= 1000) maxHP = maxH;
+                }
+            }
+        }
+
         // Distance from camera to player
         float distance = Vector3::Distance(cameraPos, pos);
-
-        // Project Foot & Head
-        Vector3 headWorld = Vector3(pos.x, pos.y + 1.8f, pos.z);
-        Vector3 footWorld = Vector3(pos.x, pos.y + 0.1f, pos.z);
+        if (distance > 300.0f)
+            continue;
 
         CGFloat screenX = 0.0, screenY = 0.0;
         CGFloat headSX = 0.0, headSY = 0.0;
@@ -1546,23 +1626,23 @@ found:
 
         BOOL visible = ProjectToOverlayPoint(pos, viewProjection, sw, sh,
                                              &screenX, &screenY);
-        if (!visible) {
+        BOOL headVisible = ProjectToOverlayPoint(headWorld, viewProjection,
+                                                sw, sh, &headSX, &headSY);
+        BOOL footVisible = ProjectToOverlayPoint(footWorld, viewProjection,
+                                                sw, sh, &footSX, &footSY);
+
+        if (!visible && !headVisible && !footVisible) {
             ++projectionFailures;
             continue;
         }
 
         ++projectedCount;
 
-        BOOL headVisible = ProjectToOverlayPoint(headWorld, viewProjection,
-                                                sw, sh, &headSX, &headSY);
-        BOOL footVisible = ProjectToOverlayPoint(footWorld, viewProjection,
-                                                sw, sh, &footSX, &footSY);
-
         FreeFireEntitySnapshot *snapshot = [FreeFireEntitySnapshot new];
         snapshot.actorAddress = entity;
         snapshot.position = pos;
-        snapshot.health = 200;
-        snapshot.maxHealth = 200;
+        snapshot.health = curHP;
+        snapshot.maxHealth = maxHP;
         snapshot.name = playerName;
         snapshot.screenX = screenX;
         snapshot.screenY = screenY;
@@ -1579,12 +1659,19 @@ found:
             snapshot.footY = footSY;
 
             CGFloat boxHeight = fabs(footSY - headSY);
-            CGFloat boxWidth = boxHeight * 0.55;
+            CGFloat boxWidth = boxHeight * 0.5f;
             CGFloat centerX = (headSX + footSX) * 0.5;
-            snapshot.boxX = centerX - boxWidth / 2.0;
+            snapshot.boxX = centerX - boxWidth * 0.5;
             snapshot.boxY = MIN(headSY, footSY);
             snapshot.boxW = boxWidth;
             snapshot.boxH = boxHeight;
+        } else if (visible) {
+            CGFloat estimatedH = (sh / std::max(distance, 1.0f)) * 1.8f;
+            CGFloat boxWidth = estimatedH * 0.5f;
+            snapshot.boxX = screenX - boxWidth * 0.5;
+            snapshot.boxY = screenY - estimatedH;
+            snapshot.boxW = boxWidth;
+            snapshot.boxH = estimatedH;
         }
 
         [entities addObject:snapshot];

@@ -17,7 +17,7 @@ extern "C" {
 #endif
 
 static inline uintptr_t CleanPointer(uintptr_t p) {
-    return p & 0x7fffffffffULL;
+    return (p & 0x7fffffffffULL) & ~7ULL;
 }
 
 static inline bool checkPointer64bits(uintptr_t addr) {

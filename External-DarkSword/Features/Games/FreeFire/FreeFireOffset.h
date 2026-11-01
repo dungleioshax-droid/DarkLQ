@@ -87,6 +87,9 @@ inline constexpr uint64_t kMatchGame_LReplicationEntities = 0xC8;
 inline constexpr uint64_t kMatchGame_CameraControllerManager = 0xD8;
 
 // Match (JMAGGLCNGIG at MatchGame + 0x90) Dictionaries & Lists
+inline constexpr uint64_t kMatch_LocalPlayer = 0x58; // Fl0rk getLocalPlayer
+inline constexpr uint64_t kMatch_C8 = 0xC8;          // Fl0rk match container
+inline constexpr uint64_t kMatch_C8_Array = 0x28;    // Fl0rk match container array
 inline constexpr uint64_t kMatch_Players1 = 0x128; // Dictionary<BEADLMGGGGL, Player>
 inline constexpr uint64_t kMatch_Players2 = 0x130; // Dictionary<BEADLMGGGGL, Player>
 inline constexpr uint64_t kMatch_Players3 = 0x140; // Dictionary<BEADLMGGGGL, Player>
@@ -107,17 +110,25 @@ inline constexpr uint64_t kTraining_MovableShootingTargetList = 0x4B8; // List<M
 inline constexpr uint64_t kTraining_AltHumanTargetList = 0x288;
 
 // CameraControllerManager Fields
+inline constexpr uint64_t kCameraControllerManager_CameraMain = 0x18; // Fl0rk CameraMain
 inline constexpr uint64_t kCameraControllerManager_MainCamera = 0x20;
 inline constexpr uint64_t kCameraControllerManager_SubCamera = 0x28;
 
 // Unity Object & Native Camera
 inline constexpr uint64_t kUnityObject_CachedPtr = 0x10;
+inline constexpr uint64_t kNativeCamera_Fl0rkWorldToClip = 0xD8; // Fl0rk ViewMatrix (WorldToClip)
 inline constexpr uint64_t kNativeCamera_WorldToCamera = 0x80;
 inline constexpr uint64_t kNativeCamera_Projection = 0xC0;
 inline constexpr uint64_t kNativeCamera_WorldToClip = 0x100;
 
 // Entity & Player Fields
 inline constexpr uint64_t kEntity_CachedTransform = 0x58;
+inline constexpr uint64_t kPlayer_HeadBodyPart = 0x550;      // Fl0rk Head BodyPart
+inline constexpr uint64_t kPlayer_RightToeBodyPart = 0x5A0;  // Fl0rk RightToe BodyPart
+inline constexpr uint64_t kPlayer_IPRIDataPool = 0x68;       // Fl0rk HP DataPool
+inline constexpr uint64_t kPlayer_NickName358 = 0x358;       // Fl0rk Nickname string
+inline constexpr uint64_t kPlayer_PlayerIDStruct = 0x2D0;    // Fl0rk PlayerID struct
+inline constexpr uint64_t kPlayer_MainCameraTransform = 0x2B0;// Fl0rk camera transform
 inline constexpr uint64_t kPlayer_OriginalNickName = 0x498;
 inline constexpr uint64_t kPlayer_TeamModeID = 0x434;
 inline constexpr uint64_t kPlayer_UserID = 0x4A8;
