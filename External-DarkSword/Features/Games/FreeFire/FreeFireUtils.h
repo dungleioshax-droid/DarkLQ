@@ -516,6 +516,10 @@ static uint64_t gFreeFireKlassNameOffset = kIl2CppClass_Name;
 static uintptr_t gGameFacadeNameAddress = 0;
 static bool gGameFacadeNameScanned = false;
 
+static inline uintptr_t CleanStringAddress(uintptr_t p) {
+    return p & 0x7fffffffffULL; // Strip PAC/TBI bits, keep byte alignment
+}
+
 static bool ReadKlassName(RemoteCall *remoteCall, uintptr_t klass,
                           char *out, size_t capacity) {
     if (!remoteCall || !out || capacity == 0)
@@ -539,8 +543,9 @@ static bool ReadKlassName(RemoteCall *remoteCall, uintptr_t klass,
         const uint64_t candidateOffsets[] = { 0x10, 0x18, 0x20, 0x28, 0x30, 0x08 };
         for (int i = 0; i < 6; ++i) {
             uint64_t off = candidateOffsets[i];
-            uintptr_t namePtr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, kAddr + off));
-            if (!validOffsetPtr(namePtr))
+            uintptr_t rawName = ReadMemorySafe<uintptr_t>(remoteCall, kAddr + off);
+            uintptr_t namePtr = CleanStringAddress(rawName);
+            if (namePtr < 0x10000 || namePtr >= 0x80000000000ULL)
                 continue;
 
             char buffer[64] = {0};
@@ -685,6 +690,85 @@ static bool Il2CppClassNameContains(RemoteCall *remoteCall, uintptr_t object,
         return false;
 
     return strstr(name, needle) != NULL;
+}
+
+static bool IsLikelyPlayerOrTarget(RemoteCall *remoteCall, uintptr_t entity,
+                                   char *outClassName, size_t classCap,
+                                   bool isDedicatedPlayerContainer) {
+    if (!remoteCall || !validOffsetPtr(entity))
+        return false;
+    entity = CleanPointer(entity);
+    if (outClassName && classCap > 0)
+        outClassName[0] = '\0';
+
+    // 1. Check Skeleton Bones (Fl0rk Head & Toe BodyPart)
+    // Humanoid players, bots, and training human targets have Head (0x550) or RightToe (0x5A0) body parts.
+    // Static props, weapons, vehicles, and buildings NEVER have these body parts.
+    uintptr_t headBp = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entity + kPlayer_HeadBodyPart)); // 0x550
+    uintptr_t toeBp = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entity + kPlayer_RightToeBodyPart)); // 0x5A0
+    if (validOffsetPtr(headBp) || validOffsetPtr(toeBp)) {
+        if (outClassName && classCap > 0 && outClassName[0] == '\0') {
+            ReadIl2CppClassName(remoteCall, entity, outClassName, classCap);
+            if (outClassName[0] == '\0') {
+                strncpy(outClassName, "Player", classCap - 1);
+            }
+        }
+        return true;
+    }
+
+    // 2. Check HP Data Pool (IPRIDataPool at 0x68)
+    // Real Player instances have an IPRIDataPool pointer containing CurHP/MaxHP.
+    uintptr_t ipriPool = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entity + kPlayer_IPRIDataPool)); // 0x68
+    if (validOffsetPtr(ipriPool)) {
+        uintptr_t v2 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ipriPool + 0x10));
+        if (validOffsetPtr(v2)) {
+            if (outClassName && classCap > 0 && outClassName[0] == '\0') {
+                ReadIl2CppClassName(remoteCall, entity, outClassName, classCap);
+                if (outClassName[0] == '\0') {
+                    strncpy(outClassName, "Player", classCap - 1);
+                }
+            }
+            return true;
+        }
+    }
+
+    // 3. Check Class Name
+    char className[64] = {0};
+    if (ReadIl2CppClassName(remoteCall, entity, className, sizeof(className)) && className[0] != '\0') {
+        if (outClassName && classCap > 0) {
+            strncpy(outClassName, className, classCap - 1);
+            outClassName[classCap - 1] = '\0';
+        }
+        if (strstr(className, "Player") != NULL ||
+            strstr(className, "Target") != NULL ||
+            strstr(className, "Dummy") != NULL ||
+            strstr(className, "Human") != NULL ||
+            strstr(className, "AIPawn") != NULL ||
+            strstr(className, "Bot") != NULL ||
+            strstr(className, "Stand") != NULL ||
+            IsSubclassOf(remoteCall, entity, "Player") ||
+            IsSubclassOf(remoteCall, entity, "AttackableEntity")) {
+            return true;
+        }
+    }
+
+    // 4. In dedicated player / training target containers:
+    // Any entity with a valid 3D position (via bones, CachedTransform, or vector fields) is confirmed!
+    if (isDedicatedPlayerContainer) {
+        Vector3 targetPos = Vector3::zero();
+        if (ReadEntityPosition(remoteCall, entity, &targetPos)) {
+            if (std::isfinite(targetPos.x) && std::isfinite(targetPos.y) && std::isfinite(targetPos.z) &&
+                (fabsf(targetPos.x) > 0.1f || fabsf(targetPos.z) > 0.1f) &&
+                fabsf(targetPos.x) < 50000.0f && fabsf(targetPos.z) < 50000.0f) {
+                if (outClassName && classCap > 0 && outClassName[0] == '\0') {
+                    strncpy(outClassName, "Target", classCap - 1);
+                }
+                return true;
+            }
+        }
+    }
+
+    return false;
 }
 
 // MARK: - Verified Field Discovery
@@ -941,12 +1025,10 @@ static inline uintptr_t GetEntityFromContainer(RemoteCall *remoteCall,
 }
 
 static bool IsDictionaryObject(RemoteCall *remoteCall, uintptr_t object) {
-    if (!validOffsetPtr(object))
+    if (!remoteCall || !validOffsetPtr(object))
         return false;
-    if (Il2CppClassNameContains(remoteCall, object, "Dictionary"))
-        return true;
 
-    // Structural dictionary validation fallback:
+    // Fast structural dictionary check first (avoids IPC string reads)
     // In Il2Cpp Dictionary<TKey, TValue>:
     // 0x18: entries (array pointer)
     // 0x20: count (int32)
@@ -958,6 +1040,10 @@ static bool IsDictionaryObject(RemoteCall *remoteCall, uintptr_t object) {
             return true;
         }
     }
+
+    if (Il2CppClassNameContains(remoteCall, object, "Dictionary"))
+        return true;
+
     return false;
 }
 

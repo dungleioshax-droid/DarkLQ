@@ -25,6 +25,7 @@ typedef void (^OverlayWebSocketConnectionHandler)(NSUInteger clientCount);
 - (BOOL)start;
 - (void)broadcastTextData:(NSData *)data;
 - (void)broadcastText:(NSString *)text;
+- (void)broadcastTargetsData:(NSData *)data;
 
 @end
 

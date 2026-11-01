@@ -26,6 +26,7 @@ static NSString *const kOverlayWebSocketGUID =
 @property(nonatomic, assign) int listenFD;
 @property(nonatomic, assign) BOOL running;
 @property(nonatomic, strong) NSMutableSet<NSNumber *> *clients;
+@property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *clientRoles;
 @property(nonatomic, strong) NSLock *clientsLock;
 @property(nonatomic, strong) NSLock *writeLock;
 @property(nonatomic, strong) dispatch_queue_t ioQueue;
@@ -48,6 +49,7 @@ static NSString *const kOverlayWebSocketGUID =
     if (self) {
         _listenFD = -1;
         _clients = [NSMutableSet set];
+        _clientRoles = [NSMutableDictionary dictionary];
         _clientsLock = [NSLock new];
         _writeLock = [NSLock new];
         _ioQueue = dispatch_queue_create("com.darksword.overlay.websocket",
@@ -121,9 +123,12 @@ static NSString *const kOverlayWebSocketGUID =
 #endif
           setsockopt(clientFD, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
           struct timeval sendTimeout = {};
-          sendTimeout.tv_usec = 5000;
+          sendTimeout.tv_sec = 0;
+          sendTimeout.tv_usec = 50000; // 50ms
           setsockopt(clientFD, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout,
                      sizeof(sendTimeout));
+          int sndBuf = 128 * 1024;
+          setsockopt(clientFD, SOL_SOCKET, SO_SNDBUF, &sndBuf, sizeof(sndBuf));
 
           dispatch_async(self.ioQueue, ^{
             [self handleClient:clientFD];
@@ -141,6 +146,7 @@ static NSString *const kOverlayWebSocketGUID =
     NSNumber *client = @(clientFD);
     [self.clientsLock lock];
     [self.clients addObject:client];
+    self.clientRoles[client] = @"unknown";
     NSUInteger count = self.clients.count;
     [self.clientsLock unlock];
     LOG(@"[OverlayWS] Client connected fd=%d clients=%lu", clientFD,
@@ -152,6 +158,7 @@ static NSString *const kOverlayWebSocketGUID =
 
     [self.clientsLock lock];
     [self.clients removeObject:client];
+    [self.clientRoles removeObjectForKey:client];
     count = self.clients.count;
     [self.clientsLock unlock];
     close(clientFD);
@@ -275,11 +282,25 @@ static NSString *const kOverlayWebSocketGUID =
             NSString *message =
                 [[NSString alloc] initWithData:payload
                                       encoding:NSUTF8StringEncoding];
-            if (g_isDebug)
-                LOG(@"[OverlayWS] Client message: %@",
-                    message ?: @"<non-utf8>");
-            if (message.length > 0 && self.messageHandler)
-                self.messageHandler(message);
+            if (message.length > 0) {
+                if ([message containsString:@"\"esp\""]) {
+                    [self.clientsLock lock];
+                    self.clientRoles[@(clientFD)] = @"esp";
+                    [self.clientsLock unlock];
+                } else if ([message containsString:@"\"menu\""]) {
+                    [self.clientsLock lock];
+                    self.clientRoles[@(clientFD)] = @"menu";
+                    [self.clientsLock unlock];
+                } else if ([message containsString:@"\"fab\""]) {
+                    [self.clientsLock lock];
+                    self.clientRoles[@(clientFD)] = @"fab";
+                    [self.clientsLock unlock];
+                }
+                if (g_isDebug)
+                    LOG(@"[OverlayWS] Client message: %@", message);
+                if (self.messageHandler)
+                    self.messageHandler(message);
+            }
         }
     }
 }
@@ -305,6 +326,36 @@ static NSString *const kOverlayWebSocketGUID =
         if (![self sendFrameToClient:fd opcode:0x1 payload:data]) {
             [self.clientsLock lock];
             [self.clients removeObject:client];
+            [self.clientRoles removeObjectForKey:client];
+            [self.clientsLock unlock];
+            close(fd);
+        }
+    }
+}
+
+- (void)broadcastTargetsData:(NSData *)data {
+    if (data.length == 0)
+        return;
+
+    [self.clientsLock lock];
+    NSMutableArray<NSNumber *> *espClients = [NSMutableArray array];
+    for (NSNumber *client in self.clients) {
+        NSString *role = self.clientRoles[client];
+        if (!role || [role isEqualToString:@"esp"] || [role isEqualToString:@"unknown"]) {
+            [espClients addObject:client];
+        }
+    }
+    [self.clientsLock unlock];
+
+    if (espClients.count == 0)
+        return;
+
+    for (NSNumber *client in espClients) {
+        int fd = client.intValue;
+        if (![self sendFrameToClient:fd opcode:0x1 payload:data]) {
+            [self.clientsLock lock];
+            [self.clients removeObject:client];
+            [self.clientRoles removeObjectForKey:client];
             [self.clientsLock unlock];
             close(fd);
         }

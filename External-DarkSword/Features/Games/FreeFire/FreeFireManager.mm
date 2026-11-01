@@ -63,6 +63,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, assign) NSTimeInterval lastDiscoveryAttempt;
 @property(nonatomic, assign) uintptr_t cachedCamera;
 @property(nonatomic, assign) uintptr_t cachedCamMgr;
+@property(nonatomic, assign) uintptr_t cachedContainerAddress;
+@property(nonatomic, assign) uintptr_t lastMatchGame;
+@property(nonatomic, assign) uintptr_t lastCtxMatchGame;
 
 - (uint64_t)getFreeFireBaseAddress;
 - (void)updateSnapshot:(RemoteCall *)remoteCall;
@@ -108,6 +111,11 @@ NS_ASSUME_NONNULL_BEGIN
         _binaryBase = 0;
         _staticFieldsAddress = 0;
         _hasValidFrame = NO;
+        _cachedCamera = 0;
+        _cachedCamMgr = 0;
+        _cachedContainerAddress = 0;
+        _lastMatchGame = 0;
+        _lastCtxMatchGame = 0;
     }
     return self;
 }
@@ -700,33 +708,29 @@ NS_ASSUME_NONNULL_BEGIN
         uintptr_t c2 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, mgr + kCameraControllerManager_SubCamera));
         if (testCandidateCamera(c2, mgr)) return true;
 
-        // Scan any other pointers in mgr
-        for (uint64_t off = 0x10; off <= 0x80; off += sizeof(uintptr_t)) {
+        // Scan other candidate offsets in mgr (throttled)
+        for (uint64_t off = 0x10; off <= 0x50; off += sizeof(uintptr_t)) {
+            if (off == kCameraControllerManager_CameraMain ||
+                off == kCameraControllerManager_MainCamera ||
+                off == kCameraControllerManager_SubCamera) continue;
             uintptr_t c = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, mgr + off));
-            if (testCandidateCamera(c, mgr)) return true;
+            if (validOffsetPtr(c) && testCandidateCamera(c, mgr)) return true;
         }
         return false;
     };
 
     // Strategy 1: Check CameraControllerManager at 0xD8 (Fl0rk reference path)
-    for (uintptr_t g : { currentMatchGame, ctxMatchGame }) {
+    // Prioritize ctxMatchGame (the active match/training game), then currentMatchGame
+    for (uintptr_t g : { ctxMatchGame, currentMatchGame }) {
         if (!validOffsetPtr(g) || !checkPointer64bits(g)) continue;
         uintptr_t mgr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, g + kMatchGame_CameraControllerManager));
         if (validOffsetPtr(mgr)) {
             if (checkManager(mgr)) goto found;
             if (testCandidateCamera(mgr, g)) goto found;
         }
-
-        for (uint64_t off = 0x80; off <= 0x140; off += sizeof(uintptr_t)) {
-            uintptr_t candMgr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, g + off));
-            if (validOffsetPtr(candMgr)) {
-                if (checkManager(candMgr)) goto found;
-                if (testCandidateCamera(candMgr, g)) goto found;
-            }
-        }
     }
 
-    // Strategy 3: Check BaseGameContext inside currentMatchGame
+    // Strategy 2: Check BaseGameContext inside currentMatchGame for subGame -> CameraControllerManager (0xD8)
     if (validOffsetPtr(currentMatchGame) && checkPointer64bits(currentMatchGame)) {
         uintptr_t gameContext = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kBaseGame_GameContext));
         if (validOffsetPtr(gameContext) && checkPointer64bits(gameContext)) {
@@ -735,8 +739,21 @@ NS_ASSUME_NONNULL_BEGIN
                 uintptr_t subGame = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, gameContext + off));
                 if (validOffsetPtr(subGame) && checkPointer64bits(subGame)) {
                     uintptr_t mgr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, subGame + kMatchGame_CameraControllerManager));
-                    if (checkManager(mgr)) goto found;
+                    if (validOffsetPtr(mgr) && checkManager(mgr)) goto found;
                 }
+            }
+        }
+    }
+
+    // Strategy 3: Fast scan around 0xD8 (0x80 to 0x140) ONLY if 0xD8 was not found
+    for (uintptr_t g : { ctxMatchGame, currentMatchGame }) {
+        if (!validOffsetPtr(g) || !checkPointer64bits(g)) continue;
+        for (uint64_t off = 0x80; off <= 0x140; off += sizeof(uintptr_t)) {
+            if (off == kMatchGame_CameraControllerManager) continue;
+            uintptr_t candMgr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, g + off));
+            if (validOffsetPtr(candMgr) && LooksLikeCameraManager(remoteCall, candMgr)) {
+                if (checkManager(candMgr)) goto found;
+                if (testCandidateCamera(candMgr, g)) goto found;
             }
         }
     }
@@ -839,9 +856,36 @@ found:
 - (FreeFireEntityContainer)resolveEntityContainer:(RemoteCall *)remoteCall
                                         matchGame:(uintptr_t)currentMatchGame
                                      ctxMatchGame:(uintptr_t)ctxMatchGame {
-    FreeFireEntityContainer emptyContainer;
+    FreeFireEntityContainer emptyContainer{};
     if (!remoteCall || (!validOffsetPtr(currentMatchGame) && !validOffsetPtr(ctxMatchGame)))
         return emptyContainer;
+
+    currentMatchGame = CleanPointer(currentMatchGame);
+    ctxMatchGame = CleanPointer(ctxMatchGame);
+
+    // 0. Test cached container if still valid and holds confirmed entities
+    if (validOffsetPtr(self.cachedContainerAddress)) {
+        FreeFireEntityContainer cachedInfo{};
+        if (InspectEntityContainer(remoteCall, self.cachedContainerAddress, &cachedInfo)) {
+            if (cachedInfo.count > 0 && cachedInfo.count <= 10000) {
+                int checkLimit = (cachedInfo.containerType == kContainerType_Dictionary)
+                                     ? std::min(cachedInfo.capacity, 4)
+                                     : std::min(cachedInfo.count, 4);
+                bool confirmed = false;
+                for (int i = 0; i < checkLimit; ++i) {
+                    uintptr_t testEnt = GetEntityFromContainer(remoteCall, cachedInfo, i);
+                    if (validOffsetPtr(testEnt) && IsLikelyPlayerOrTarget(remoteCall, testEnt, nullptr, 0, true)) {
+                        confirmed = true;
+                        break;
+                    }
+                }
+                if (confirmed) {
+                    return cachedInfo;
+                }
+            }
+        }
+        self.cachedContainerAddress = 0;
+    }
 
     if (!validOffsetPtr(ctxMatchGame) && validOffsetPtr(currentMatchGame)) {
         uintptr_t gameCtx = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kBaseGame_GameContext));
@@ -854,261 +898,198 @@ found:
         }
     }
 
-    FreeFireEntityContainer bestContainer;
-    int bestScore = 0;
-    FreeFireEntityContainer firstValidContainer;
-    FreeFireEntityContainer largestContainer;
+    FreeFireEntityContainer firstValidContainer{};
+    FreeFireEntityContainer largestContainer{};
     int largestCount = -1;
 
-    auto consider = [&](uintptr_t cand) {
+    auto testCandidate = [&](uintptr_t cand, bool isDedicated) -> FreeFireEntityContainer {
         cand = CleanPointer(cand);
-        if (!validOffsetPtr(cand)) return;
-        FreeFireEntityContainer info;
+        if (!validOffsetPtr(cand)) return emptyContainer;
+
+        FreeFireEntityContainer info{};
         if (!InspectEntityContainer(remoteCall, cand, &info))
-            return;
+            return emptyContainer;
+
         if (info.count > 0 && firstValidContainer.container == 0)
             firstValidContainer = info;
         if (info.count > 0 && info.count <= 10000 && info.count > largestCount) {
             largestCount = info.count;
             largestContainer = info;
         }
-        if (info.count <= 0)
-            return;
 
-        int confirmedEntities = 0;
+        if (info.count <= 0 || info.count > 10000)
+            return emptyContainer;
+
         int checkLimit = (info.containerType == kContainerType_Dictionary)
-                             ? std::min(info.capacity, 32)
-                             : std::min(info.count, 16);
-        for (int i = 0; i < checkLimit && confirmedEntities < 5; ++i) {
+                             ? std::min(info.capacity, 12)
+                             : std::min(info.count, 6);
+        for (int i = 0; i < checkLimit; ++i) {
             uintptr_t entity = GetEntityFromContainer(remoteCall, info, i);
             if (!validOffsetPtr(entity)) continue;
-            if (IsSubclassOf(remoteCall, entity, "Player") ||
-                IsSubclassOf(remoteCall, entity, "Entity") ||
-                IsSubclassOf(remoteCall, entity, "AttackableEntity") ||
-                Il2CppClassNameContains(remoteCall, entity, "Player") ||
-                Il2CppClassNameContains(remoteCall, entity, "Entity") ||
-                Il2CppClassNameContains(remoteCall, entity, "Target") ||
-                Il2CppClassNameContains(remoteCall, entity, "Human") ||
-                Il2CppClassNameContains(remoteCall, entity, "Dummy") ||
-                Il2CppClassNameContains(remoteCall, entity, "AIPawn") ||
-                Il2CppClassNameContains(remoteCall, entity, "Stand")) {
-                confirmedEntities++;
-            } else {
-                Vector3 testPos = Vector3::zero();
-                if (ReadEntityPosition(remoteCall, entity, &testPos)) {
-                    confirmedEntities++;
-                }
+            if (IsLikelyPlayerOrTarget(remoteCall, entity, nullptr, 0, isDedicated)) {
+                self.cachedContainerAddress = cand;
+                return info;
             }
         }
-
-        int score = (confirmedEntities > 0 ? 10000 : 0) + (confirmedEntities * 100) + info.count;
-        if (score > bestScore) {
-            bestScore = score;
-            bestContainer = info;
-        }
+        return emptyContainer;
     };
 
-    // 1. Check ctxMatchGame (Training Ground MatchGame MNDPBJMLABJ / MatchGame)
-    if (validOffsetPtr(ctxMatchGame)) {
-        // Training Mode targets
-        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + kTraining_HumanTargetList))); // 0x478
-        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + kTraining_HumanTargetQueue1))); // 0x468
-        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + kTraining_HumanTargetQueue2))); // 0x470
-        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + kTraining_MovableShootingTargetList))); // 0x4B8
-        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + kTraining_AltHumanTargetList))); // 0x288
-        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + 0x448)));
-        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + 0x450)));
-        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + 0x490)));
-        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + 0x4C8)));
-        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + 0x4D0)));
-        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + 0x4F0)));
-
-        // MatchGame replication entities
-        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + kMatchGame_ReplicationEntities)));
-        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + kMatchGame_LReplicationEntities)));
-
-        // m_Match on ctxMatchGame
-        uintptr_t ctxMatchObj = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + kMatchGame_Match));
-        if (validOffsetPtr(ctxMatchObj)) {
-            uintptr_t florkC8 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchObj + kMatch_C8));
+    // Priority 1: Direct Fl0rk container match (0x90) -> 0xC8 -> 0x28 (and 0xC8)
+    for (uintptr_t g : { ctxMatchGame, currentMatchGame }) {
+        if (!validOffsetPtr(g)) continue;
+        uintptr_t matchObj = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, g + kMatchGame_Match));
+        if (validOffsetPtr(matchObj)) {
+            uintptr_t florkC8 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, matchObj + kMatch_C8));
             if (validOffsetPtr(florkC8)) {
                 uintptr_t florkArr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, florkC8 + kMatch_C8_Array));
-                consider(florkArr);
-                consider(florkC8);
-            }
+                FreeFireEntityContainer res = testCandidate(florkArr, true);
+                if (res.container != 0) return res;
 
-            const uint64_t matchOffsets[] = {
-                kMatch_Players1, kMatch_Players2, kMatch_Players3, kMatch_Players4, kMatch_Players5,
-                kMatch_PlayerList1, kMatch_PlayerList2, kMatch_AIPawns, kMatch_Teams, kMatch_Vehicles, kMatch_Containers,
-                0x570, 0x5D8, 0x5E0
-            };
-            for (uint64_t off : matchOffsets) {
-                consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchObj + off)));
+                res = testCandidate(florkC8, true);
+                if (res.container != 0) return res;
             }
         }
     }
 
-    // 2. BaseGame static fields via ARM64 instruction analysis & MethodInfo
+    // Priority 2: Training target list 0x478
+    for (uintptr_t g : { ctxMatchGame, currentMatchGame }) {
+        if (!validOffsetPtr(g)) continue;
+        uintptr_t t478 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, g + kTraining_HumanTargetList));
+        if (validOffsetPtr(t478)) {
+            FreeFireEntityContainer res = testCandidate(t478, true);
+            if (res.container != 0) return res;
+        }
+    }
+
+    // Priority 3: sAllEntities (0x08 on BaseGame static fields)
     if (!validOffsetPtr(self.baseGameStaticFieldsAddress)) {
-        self.baseGameStaticFieldsAddress = ResolveBaseGameStaticFieldsFromARM64(remoteCall, self.binaryBase);
-        if (validOffsetPtr(self.baseGameStaticFieldsAddress)) {
-            LOG(@"[FreeFire] Discovered BaseGame static fields via ARM64: 0x%lx",
-                (unsigned long)self.baseGameStaticFieldsAddress);
-        }
-    }
-    if (validOffsetPtr(self.baseGameStaticFieldsAddress)) {
-        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, self.baseGameStaticFieldsAddress + kBaseGameStatic_sAllEntities))); // 0x08
-        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, self.baseGameStaticFieldsAddress + kBaseGameStatic_sTickedEntities))); // 0x00
-        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, self.baseGameStaticFieldsAddress + kBaseGameStatic_sAllLEntities))); // 0x10
-    }
-
-    uintptr_t bgMethodAddr = self.binaryBase + kMethodInfo_BaseGame_CCtor;
-    uintptr_t bgMethodDeref = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgMethodAddr));
-    const uintptr_t methodCandidates[2] = { bgMethodDeref, bgMethodAddr };
-    for (int m = 0; m < 2; ++m) {
-        uintptr_t mPtr = methodCandidates[m];
-        if (!validOffsetPtr(mPtr)) continue;
-        uintptr_t bgKlass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, mPtr + kMethodInfo_Klass)) & ~7ULL;
-        if (validOffsetPtr(bgKlass)) {
-            uintptr_t bgStatics = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgKlass + kIl2CppClass_StaticFields));
-            if (validOffsetPtr(bgStatics)) {
-                consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgStatics + kBaseGameStatic_sAllEntities))); // 0x08
-                consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgStatics + kBaseGameStatic_sTickedEntities))); // 0x00
-                consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgStatics + kBaseGameStatic_sAllLEntities))); // 0x10
+        for (uintptr_t g : { ctxMatchGame, currentMatchGame }) {
+            if (!validOffsetPtr(g)) continue;
+            uintptr_t sf = ResolveBaseGameStaticFields(remoteCall, g);
+            if (validOffsetPtr(sf)) {
+                self.baseGameStaticFieldsAddress = sf;
                 break;
             }
         }
     }
+    if (validOffsetPtr(self.baseGameStaticFieldsAddress)) {
+        uintptr_t allEnt = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, self.baseGameStaticFieldsAddress + kBaseGameStatic_sAllEntities));
+        FreeFireEntityContainer res = testCandidate(allEnt, false);
+        if (res.container != 0) return res;
 
-    // 3. BaseGame static fields via parent-walk / structural walk
-    if (validOffsetPtr(currentMatchGame)) {
-        uintptr_t walkStatics = ResolveBaseGameStaticFields(remoteCall, currentMatchGame);
-        if (validOffsetPtr(walkStatics)) {
-            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sAllEntities)));
-            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sTickedEntities)));
-            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sAllLEntities)));
-        }
-        consider(ResolveBaseGameAllEntities(remoteCall, currentMatchGame));
-    }
-    if (validOffsetPtr(ctxMatchGame)) {
-        uintptr_t walkStatics = ResolveBaseGameStaticFields(remoteCall, ctxMatchGame);
-        if (validOffsetPtr(walkStatics)) {
-            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sAllEntities)));
-            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sTickedEntities)));
-            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, walkStatics + kBaseGameStatic_sAllLEntities)));
-        }
-        consider(ResolveBaseGameAllEntities(remoteCall, ctxMatchGame));
+        uintptr_t tickedEnt = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, self.baseGameStaticFieldsAddress + kBaseGameStatic_sTickedEntities));
+        res = testCandidate(tickedEnt, false);
+        if (res.container != 0) return res;
+
+        uintptr_t allLEnt = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, self.baseGameStaticFieldsAddress + kBaseGameStatic_sAllLEntities));
+        res = testCandidate(allLEnt, false);
+        if (res.container != 0) return res;
     }
 
-    // 4. MatchGame fields on currentMatchGame
-    uintptr_t matchObj = 0;
-    uintptr_t uiScene = 0;
-    if (validOffsetPtr(currentMatchGame)) {
-        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kMatchGame_ReplicationEntities)));
-        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kMatchGame_LReplicationEntities)));
-
-        matchObj = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kMatchGame_Match));
-        if (!validOffsetPtr(matchObj) || !LooksLikeMatchObject(remoteCall, matchObj)) {
-            const uint64_t candidateMatchOffsets[] = { 0x88, 0x90, 0x98, 0x80, 0xA0, 0xA8, 0xB0 };
-            for (uint64_t mOff : candidateMatchOffsets) {
-                uintptr_t candMatch = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + mOff));
-                if (validOffsetPtr(candMatch) && LooksLikeMatchObject(remoteCall, candMatch)) {
-                    matchObj = candMatch;
-                    break;
-                }
-            }
+    // Priority 4: Other training target queues / lists
+    for (uintptr_t g : { ctxMatchGame, currentMatchGame }) {
+        if (!validOffsetPtr(g)) continue;
+        const uint64_t trainingOffsets[] = {
+            kTraining_HumanTargetQueue1,          // 0x468
+            kTraining_HumanTargetQueue2,          // 0x470
+            kTraining_MovableShootingTargetList,  // 0x4B8
+            kTraining_AltHumanTargetList,         // 0x288
+            0x448, 0x450, 0x490, 0x4C8, 0x4D0, 0x4F0
+        };
+        for (uint64_t off : trainingOffsets) {
+            uintptr_t cand = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, g + off));
+            FreeFireEntityContainer res = testCandidate(cand, true);
+            if (res.container != 0) return res;
         }
+    }
 
+    // Priority 5: MatchGame replication entities & match player containers
+    for (uintptr_t g : { ctxMatchGame, currentMatchGame }) {
+        if (!validOffsetPtr(g)) continue;
+        uintptr_t rep = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, g + kMatchGame_ReplicationEntities));
+        FreeFireEntityContainer res = testCandidate(rep, false);
+        if (res.container != 0) return res;
+
+        uintptr_t lrep = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, g + kMatchGame_LReplicationEntities));
+        res = testCandidate(lrep, false);
+        if (res.container != 0) return res;
+
+        uintptr_t matchObj = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, g + kMatchGame_Match));
         if (validOffsetPtr(matchObj)) {
-            // Fl0rk reference match container: match + 0xC8 -> + 0x28
-            uintptr_t florkC8 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, matchObj + kMatch_C8));
-            if (validOffsetPtr(florkC8)) {
-                uintptr_t florkArr = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, florkC8 + kMatch_C8_Array));
-                consider(florkArr);
-                consider(florkC8);
-            }
-
             const uint64_t matchOffsets[] = {
                 kMatch_Players1, kMatch_Players2, kMatch_Players3, kMatch_Players4, kMatch_Players5,
                 kMatch_PlayerList1, kMatch_PlayerList2, kMatch_AIPawns, kMatch_Teams, kMatch_Vehicles, kMatch_Containers,
                 0x570, 0x5D8, 0x5E0
             };
             for (uint64_t off : matchOffsets) {
-                consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, matchObj + off)));
-            }
-        }
-
-        const uint64_t trainingOffsets[] = {
-            kTraining_HumanTargetList, kTraining_HumanTargetQueue1, kTraining_HumanTargetQueue2,
-            kTraining_MovableShootingTargetList, kTraining_AltHumanTargetList, 0x448, 0x450, 0x490, 0x4C8, 0x4D0, 0x3D8, 0x3E8
-        };
-        for (uint64_t off : trainingOffsets) {
-            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + off)));
-        }
-
-        uiScene = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kBaseGame_UIScene));
-        if (validOffsetPtr(uiScene)) {
-            const uint64_t sceneDictOffsets[] = {
-                0x128, 0x130, 0x140, 0x148, 0x150, 0x4C0, 0x1088, 0x20, 0x70, 0x88, 0x90, 0xA0, 0x2F8
-            };
-            for (uint64_t off : sceneDictOffsets) {
-                consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, uiScene + off)));
+                uintptr_t cand = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, matchObj + off));
+                res = testCandidate(cand, false);
+                if (res.container != 0) return res;
             }
         }
     }
 
-    // If a confirmed entity container with count > 0 is found, return it immediately
-    if (bestScore >= 10000) {
-        return bestContainer;
-    }
-
-    // 5. Universal dynamic scan across ctxMatchGame, currentMatchGame, m_Match, and uiScene
-    if (validOffsetPtr(ctxMatchGame)) {
-        for (uint64_t off = 0x10; off <= 0x600; off += sizeof(uintptr_t)) {
-            uintptr_t cand = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + off));
-            consider(cand);
-        }
-        uintptr_t ctxMatchObj = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchGame + kMatchGame_Match));
-        if (validOffsetPtr(ctxMatchObj)) {
-            for (uint64_t off = 0x10; off <= 0x300; off += sizeof(uintptr_t)) {
-                uintptr_t cand = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchObj + off));
-                consider(cand);
+    // MethodInfo BaseGame CCtor fallback
+    if (!validOffsetPtr(self.baseGameStaticFieldsAddress)) {
+        uintptr_t bgMethodAddr = self.binaryBase + kMethodInfo_BaseGame_CCtor;
+        uintptr_t bgMethodDeref = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgMethodAddr));
+        const uintptr_t methodCandidates[2] = { bgMethodDeref, bgMethodAddr };
+        for (int m = 0; m < 2; ++m) {
+            uintptr_t mPtr = methodCandidates[m];
+            if (!validOffsetPtr(mPtr)) continue;
+            uintptr_t bgKlass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, mPtr + kMethodInfo_Klass)) & ~7ULL;
+            if (validOffsetPtr(bgKlass)) {
+                uintptr_t bgStatics = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgKlass + kIl2CppClass_StaticFields));
+                if (validOffsetPtr(bgStatics)) {
+                    self.baseGameStaticFieldsAddress = bgStatics;
+                    FreeFireEntityContainer res = testCandidate(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgStatics + kBaseGameStatic_sAllEntities)), false);
+                    if (res.container != 0) return res;
+                    break;
+                }
             }
         }
     }
 
-    if (validOffsetPtr(currentMatchGame)) {
-        for (uint64_t off = 0x10; off <= 0x600; off += sizeof(uintptr_t)) {
-            uintptr_t cand = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + off));
-            consider(cand);
+    // ARM64 instruction analysis fallback (throttled to discoveryDue to avoid choking loop)
+    if (!validOffsetPtr(self.baseGameStaticFieldsAddress) && [self discoveryDue]) {
+        self.baseGameStaticFieldsAddress = ResolveBaseGameStaticFieldsFromARM64(remoteCall, self.binaryBase);
+        if (validOffsetPtr(self.baseGameStaticFieldsAddress)) {
+            LOG(@"[FreeFire] Discovered BaseGame static fields via ARM64: 0x%lx",
+                (unsigned long)self.baseGameStaticFieldsAddress);
+            FreeFireEntityContainer res = testCandidate(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, self.baseGameStaticFieldsAddress + kBaseGameStatic_sAllEntities)), false);
+            if (res.container != 0) return res;
         }
     }
 
-    if (validOffsetPtr(matchObj)) {
-        for (uint64_t off = 0x10; off <= 0x600; off += sizeof(uintptr_t)) {
-            uintptr_t cand = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, matchObj + off));
-            consider(cand);
+    // Dynamic scan fallback: ONLY when discoveryDue
+    if ([self discoveryDue]) {
+        for (uintptr_t g : { ctxMatchGame, currentMatchGame }) {
+            if (!validOffsetPtr(g)) continue;
+            for (uint64_t off = 0x10; off <= 0x600; off += sizeof(uintptr_t)) {
+                uintptr_t cand = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, g + off));
+                FreeFireEntityContainer res = testCandidate(cand, false);
+                if (res.container != 0) return res;
+            }
+            uintptr_t matchObj = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, g + kMatchGame_Match));
+            if (validOffsetPtr(matchObj)) {
+                for (uint64_t off = 0x10; off <= 0x300; off += sizeof(uintptr_t)) {
+                    uintptr_t cand = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, matchObj + off));
+                    FreeFireEntityContainer res = testCandidate(cand, false);
+                    if (res.container != 0) return res;
+                }
+            }
         }
     }
 
-    if (validOffsetPtr(uiScene)) {
-        for (uint64_t off = 0x20; off <= 0x600; off += sizeof(uintptr_t)) {
-            uintptr_t cand = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, uiScene + off));
-            consider(cand);
-        }
-    }
-
-    if (bestScore >= 10000)
-        return bestContainer;
-
-    if (largestContainer.container != 0 && largestCount > 0)
+    if (largestContainer.container != 0 && largestCount > 0) {
+        self.cachedContainerAddress = largestContainer.container;
         return largestContainer;
+    }
 
-    if (firstValidContainer.container != 0 && firstValidContainer.count > 0)
+    if (firstValidContainer.container != 0 && firstValidContainer.count > 0) {
+        self.cachedContainerAddress = firstValidContainer.container;
         return firstValidContainer;
-
-    if (bestContainer.container != 0)
-        return bestContainer;
+    }
 
     return emptyContainer;
 }
@@ -1142,26 +1123,13 @@ found:
     uintptr_t cg = ReadMemorySafe<uintptr_t>(
         remoteCall, staticFields + kGameFacadeStatic_CurrentGame);
 
-    char mgName[48] = {0}, cgName[48] = {0};
-    if (validOffsetPtr(mg))
-        ReadIl2CppClassName(remoteCall, mg, mgName, sizeof(mgName));
-    if (validOffsetPtr(cg))
-        ReadIl2CppClassName(remoteCall, cg, cgName, sizeof(cgName));
-
     if (validOffsetPtr(mg)) {
         // In Free Fire, CurrentMatchGame (+0x08) is ONLY non-zero when inside a match (BR/CS).
         // It must always take top priority over CurrentGame (Lobby/FrontEndGame).
         currentMatchGame = mg;
         matchGameOffset = kGameFacadeStatic_CurrentMatchGame;
-    } else if (FieldHoldsMatchGame(remoteCall, cg)) {
-        currentMatchGame = cg;
-        matchGameOffset = kGameFacadeStatic_CurrentGame;
-    } else if (validOffsetPtr(cg) && FieldHoldsAnyGame(remoteCall, cg)) {
-        // Training Mode / Social Area / Custom Mode
-        currentMatchGame = cg;
-        matchGameOffset = kGameFacadeStatic_CurrentGame;
     } else if (validOffsetPtr(cg)) {
-        // GameFacade.CurrentGame fallback: in Free Fire, offset 0x0 is guaranteed to be the active BaseGame
+        // Training Mode / Social Area / Custom Mode / Lobby
         currentMatchGame = cg;
         matchGameOffset = kGameFacadeStatic_CurrentGame;
     }
@@ -1216,11 +1184,10 @@ found:
     }
 
     char matchGameClass[64] = {0};
-    if (validOffsetPtr(currentMatchGame)) {
+    if (validOffsetPtr(currentMatchGame) && [self diagnosticsDue]) {
         ReadIl2CppClassName(remoteCall, currentMatchGame, matchGameClass,
                             sizeof(matchGameClass));
         if (matchGameClass[0] == '\0') {
-            // Debug: log clean klass pointer and string at nameAtKlass
             uintptr_t rawKlass = ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame);
             uintptr_t cleanKlass = CleanPointer(rawKlass) & ~7ULL;
             uintptr_t nameAtKlass = 0;
@@ -1239,14 +1206,35 @@ found:
     }
 
     if (!validOffsetPtr(currentMatchGame)) {
-        [self reportStage:[NSString stringWithFormat:@"stage 2/6: no game (cg=0x%lx'%s', mg=0x%lx'%s')",
-                                                     (unsigned long)cg, cgName,
-                                                     (unsigned long)mg, mgName]];
+        if (self.lastMatchGame != 0 || self.lastCtxMatchGame != 0) {
+            LOG(@"[FreeFire] MatchGame became null; invalidating camera & container cache");
+            self.cachedCamera = 0;
+            self.cachedCamMgr = 0;
+            self.cachedContainerAddress = 0;
+            self.baseGameStaticFieldsAddress = 0;
+            self.lastMatchGame = 0;
+            self.lastCtxMatchGame = 0;
+        }
+        if ([self diagnosticsDue]) {
+            [self reportStage:[NSString stringWithFormat:@"stage 2/6: no game (cg=0x%lx, mg=0x%lx)",
+                                                         (unsigned long)cg, (unsigned long)mg]];
+        }
         @synchronized(self) {
             self.hasValidFrame = NO;
             [self clearOverlayTargets];
         }
         return;
+    }
+
+    // Invalidate cached camera and container whenever currentMatchGame changes (e.g. Lobby -> Training Ground)
+    if (currentMatchGame != self.lastMatchGame) {
+        LOG(@"[FreeFire] MatchGame changed from 0x%lx to 0x%lx; invalidating camera & container cache",
+            (unsigned long)self.lastMatchGame, (unsigned long)currentMatchGame);
+        self.cachedCamera = 0;
+        self.cachedCamMgr = 0;
+        self.cachedContainerAddress = 0;
+        self.baseGameStaticFieldsAddress = 0;
+        self.lastMatchGame = currentMatchGame;
     }
 
     // 3. Resolve ctxMatchGame from BaseGameContext (e.g. Training Ground MatchGame)
@@ -1257,19 +1245,29 @@ found:
         uintptr_t cand30 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, gameContext + 0x30));
         if (validOffsetPtr(cand30) && checkPointer64bits(cand30)) {
             ctxMatchGame = cand30;
-        }
-        if (!validOffsetPtr(ctxMatchGame)) {
+        } else {
             uintptr_t cand20 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, gameContext + 0x20));
-            if (validOffsetPtr(cand20) && checkPointer64bits(cand20) && FieldHoldsMatchGame(remoteCall, cand20)) {
+            if (validOffsetPtr(cand20) && checkPointer64bits(cand20)) {
                 ctxMatchGame = cand20;
+            } else {
+                uintptr_t cand18 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, gameContext + 0x18));
+                if (validOffsetPtr(cand18) && checkPointer64bits(cand18)) {
+                    ctxMatchGame = cand18;
+                }
             }
         }
-        if (!validOffsetPtr(ctxMatchGame)) {
-            uintptr_t cand18 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, gameContext + 0x18));
-            if (validOffsetPtr(cand18) && checkPointer64bits(cand18) && FieldHoldsMatchGame(remoteCall, cand18)) {
-                ctxMatchGame = cand18;
-            }
+    }
+
+    if (ctxMatchGame != self.lastCtxMatchGame) {
+        if (self.lastCtxMatchGame != 0 || ctxMatchGame != 0) {
+            LOG(@"[FreeFire] ctxMatchGame changed from 0x%lx to 0x%lx; invalidating camera & container cache",
+                (unsigned long)self.lastCtxMatchGame, (unsigned long)ctxMatchGame);
+            self.cachedCamera = 0;
+            self.cachedCamMgr = 0;
+            self.cachedContainerAddress = 0;
+            self.baseGameStaticFieldsAddress = 0;
         }
+        self.lastCtxMatchGame = ctxMatchGame;
     }
 
     // 4. Resolve Camera and ViewProjection Matrix (100% PURE MEMORY READ)
@@ -1339,71 +1337,12 @@ found:
                                                                matchGame:currentMatchGame
                                                             ctxMatchGame:ctxMatchGame];
 
-    // Diagnostics: record where candidate dictionaries live so the next device
-    // log explains why a container was (or was not) selected.
-    auto containerCount = [&](uintptr_t cand) -> int {
-        cand = CleanPointer(cand);
-        if (!validOffsetPtr(cand))
-            return -1;
-        FreeFireEntityContainer info;
-        if (!InspectEntityContainer(remoteCall, cand, &info))
-            return -1;
-        return info.count;
-    };
-
-    char diagBuf[512] = {0};
-    int cgQ468 = -1, cgQ470 = -1, cgL478 = -1, cgL4B8 = -1;
-    {
-        uintptr_t diagMatchObj = CleanPointer(ReadMemorySafe<uintptr_t>(
-            remoteCall, currentMatchGame + kMatchGame_Match));
-        uintptr_t diagRepDict = CleanPointer(ReadMemorySafe<uintptr_t>(
-            remoteCall, currentMatchGame + kMatchGame_ReplicationEntities));
-        uintptr_t diagLRepDict = CleanPointer(ReadMemorySafe<uintptr_t>(
-            remoteCall, currentMatchGame + kMatchGame_LReplicationEntities));
-        uintptr_t diagUIScene = CleanPointer(ReadMemorySafe<uintptr_t>(
-            remoteCall, currentMatchGame + kBaseGame_UIScene));
-        uintptr_t diagBgStatics = self.baseGameStaticFieldsAddress;
-        if (!validOffsetPtr(diagBgStatics)) {
-            diagBgStatics = ResolveBaseGameStaticFields(remoteCall, currentMatchGame);
-        }
-
-        uintptr_t diagAllEnt = 0;
-        if (validOffsetPtr(diagBgStatics)) {
-            diagAllEnt = CleanPointer(ReadMemorySafe<uintptr_t>(
-                remoteCall, diagBgStatics + kBaseGameStatic_sAllEntities));
-        }
-
-        // Training target diagnostics on currentMatchGame
-        cgQ468 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + 0x468));
-        cgQ470 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + 0x470));
-        cgL478 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + 0x478));
-        cgL4B8 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + 0x4B8));
-
-        int diagP128 = -1, diagP130 = -1, diagP158 = -1, diagP168 = -1, diagP2A0 = -1;
-        if (validOffsetPtr(diagMatchObj)) {
-            diagP128 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, diagMatchObj + kMatch_Players1));
-            diagP130 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, diagMatchObj + kMatch_Players2));
-            diagP158 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, diagMatchObj + kMatch_PlayerList1));
-            diagP168 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, diagMatchObj + kMatch_AIPawns));
-            diagP2A0 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, diagMatchObj + kMatch_Containers));
-        }
-
-        snprintf(diagBuf, sizeof(diagBuf),
-                 "ctx=0x%lx match=0x%lx rep=0x%lx allEnt=0x%lx(%d) "
-                 "cg468=%d cg470=%d cg478=%d cg4B8=%d "
-                 "p128=%d p130=%d p158=%d",
-                 (unsigned long)gameContext, (unsigned long)diagMatchObj,
-                 (unsigned long)diagRepDict,
-                 (unsigned long)diagAllEnt,
-                 containerCount(diagAllEnt),
-                 cgQ468, cgQ470, cgL478, cgL4B8,
-                 diagP128, diagP130, diagP158);
-    }
-
     if (!validOffsetPtr(containerInfo.container)) {
-        [self reportStage:
-                  [NSString stringWithFormat:@"stage 5/6: entity container missing (game='%s', ctxMg=0x%lx, %s)",
-                                             matchGameClass, (unsigned long)ctxMatchGame, diagBuf]];
+        if ([self diagnosticsDue]) {
+            [self reportStage:
+                      [NSString stringWithFormat:@"stage 5/6: entity container missing (game='%s', ctxMg=0x%lx)",
+                                                 matchGameClass, (unsigned long)ctxMatchGame]];
+        }
         @synchronized(self) {
             self.hasValidFrame = NO;
         }
@@ -1411,22 +1350,20 @@ found:
     }
 
     if (containerInfo.count <= 0 || containerInfo.count > 10000) {
-        const char *modeHint = "";
-        if (!validOffsetPtr(mg) || mg == 0) {
-            if (cgQ468 >= 0 || cgL478 >= 0 || cgL4B8 >= 0) {
+        if ([self diagnosticsDue]) {
+            const char *modeHint = "";
+            if (!validOffsetPtr(mg) || mg == 0) {
                 modeHint = " [In Training Ground - enter Shooting Range / Combat Zone to spawn targets]";
-            } else {
-                modeHint = " [In Lobby - enter match to see enemies]";
             }
+            [self reportStage:
+                      [NSString stringWithFormat:@"stage 5/6: entities=%d%s (dict=0x%lx, type=%d, game='%s', ctxMg=0x%lx)",
+                                                 (int)containerInfo.count,
+                                                 modeHint,
+                                                 (unsigned long)containerInfo.container,
+                                                 containerInfo.containerType,
+                                                 matchGameClass,
+                                                 (unsigned long)ctxMatchGame]];
         }
-        [self reportStage:
-                  [NSString stringWithFormat:@"stage 5/6: entities=%d%s (dict=0x%lx, type=%d, game='%s', ctxMg=0x%lx, %s)",
-                                             (int)containerInfo.count,
-                                             modeHint,
-                                             (unsigned long)containerInfo.container,
-                                             containerInfo.containerType,
-                                             matchGameClass,
-                                             (unsigned long)ctxMatchGame, diagBuf]];
         @synchronized(self) {
             self.hasValidFrame = NO;
         }
@@ -1493,35 +1430,9 @@ found:
                 continue;
         }
 
-        // Check if Entity is Player
-        uintptr_t klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entity));
+        // Check if Entity is Player or Target
         char className[64] = {0};
-        if (validOffsetPtr(klass)) {
-            ReadKlassName(remoteCall, klass, className, sizeof(className));
-        }
-
-        if (className[0] != '\0' && sampleClasses.size() < 96 &&
-            sampleClasses.find(className) == std::string::npos) {
-            if (!sampleClasses.empty())
-                sampleClasses += ",";
-            sampleClasses += className;
-        }
-
-        BOOL isTargetOrPlayer = NO;
-        if (className[0] != '\0') {
-            isTargetOrPlayer = (strncmp(className, "Player", 6) == 0 ||
-                                strstr(className, "Player") != NULL ||
-                                strstr(className, "Target") != NULL ||
-                                strstr(className, "Dummy") != NULL ||
-                                strstr(className, "AIPawn") != NULL ||
-                                strstr(className, "Stand") != NULL ||
-                                IsSubclassOf(remoteCall, entity, "Player") ||
-                                IsSubclassOf(remoteCall, entity, "AttackableEntity") ||
-                                IsSubclassOf(remoteCall, entity, "Entity"));
-        }
-        // Class names are unreliable on some builds (ReadIl2CppClassName can
-        // return an empty or unrelated name), so always allow a structural
-        // position check as a second chance instead of dropping the entity.
+        BOOL isTargetOrPlayer = IsLikelyPlayerOrTarget(remoteCall, entity, className, sizeof(className), true);
         if (!isTargetOrPlayer) {
             Vector3 testPos = Vector3::zero();
             if (ReadEntityPosition(remoteCall, entity, &testPos)) {
@@ -1531,6 +1442,13 @@ found:
                              (unsigned int)(entity & 0xFFFF));
                 }
             }
+        }
+
+        if (className[0] != '\0' && sampleClasses.size() < 96 &&
+            sampleClasses.find(className) == std::string::npos) {
+            if (!sampleClasses.empty())
+                sampleClasses += ",";
+            sampleClasses += className;
         }
 
         if (!isTargetOrPlayer) {

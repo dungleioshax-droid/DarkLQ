@@ -1705,7 +1705,7 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
             (unsigned long)[OverlayWebSocketServer sharedServer].clientCount);
     }
 
-    [[OverlayWebSocketServer sharedServer] broadcastTextData:jsonData];
+    [[OverlayWebSocketServer sharedServer] broadcastTargetsData:jsonData];
     return YES;
 }
 
@@ -1762,7 +1762,8 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
     if (!self.webView)
         return NO;
 
-    [[OverlayWebSocketServer sharedServer] broadcastText:@"[]"];
+    NSData *emptyPayload = [@"{\"type\":\"targets\",\"targets\":[]}" dataUsingEncoding:NSUTF8StringEncoding];
+    [[OverlayWebSocketServer sharedServer] broadcastTargetsData:emptyPayload];
     LOG(@"[RemoteWebViewOverlay] Targets cleared");
     return YES;
 }
