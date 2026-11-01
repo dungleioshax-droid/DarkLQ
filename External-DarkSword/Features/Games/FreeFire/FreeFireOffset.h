@@ -52,6 +52,11 @@ inline constexpr uint64_t kGameFacadeStatic_CurrentMatchGame = 0x08;
 inline constexpr uint64_t kGameFacadeStatic_LocalPlayerUserID = 0x58;
 
 // BaseGame & UIFrontEndScene Fields (Training Ground / Social Area)
+inline constexpr uint64_t kBaseGame_CCtor = 0x6B31884;
+inline constexpr uint64_t kBaseGame_GetEntityByUniqueID = 0x6B2F664;
+inline constexpr uint64_t kBaseGame_RegisterEntity = 0x6B2F148;
+inline constexpr uint64_t kBaseGame_HideAllEntity = 0x6B2F434;
+inline constexpr uint64_t kBaseGame_UnregisterEntity = 0x6B2F2B8;
 inline constexpr uint64_t kMethodInfo_BaseGame_CCtor = 0x1FB5D028;
 inline constexpr uint64_t kBaseGame_UIScene = 0x10;
 inline constexpr uint64_t kBaseGame_GameContext = 0x30;

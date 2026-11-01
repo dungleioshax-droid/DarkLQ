@@ -56,6 +56,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, copy) NSArray<FreeFireEntitySnapshot *> *entitySnapshots;
 @property(nonatomic, readwrite) BOOL hasValidFrame;
 @property(nonatomic, assign) uintptr_t staticFieldsAddress;
+@property(nonatomic, assign) uintptr_t baseGameStaticFieldsAddress;
 @property(nonatomic, assign) NSTimeInterval lastStaticResolveAttempt;
 @property(nonatomic, copy) NSString *binaryBaseSource;
 @property(nonatomic, strong) RemoteWebViewOverlay *remoteWebViewOverlay;
@@ -986,7 +987,20 @@ NS_ASSUME_NONNULL_BEGIN
         }
     }
 
-    // 2. BaseGame static fields via MethodInfo (0x1FB5D028)
+    // 2. BaseGame static fields via ARM64 instruction analysis & MethodInfo
+    if (!validOffsetPtr(self.baseGameStaticFieldsAddress)) {
+        self.baseGameStaticFieldsAddress = ResolveBaseGameStaticFieldsFromARM64(remoteCall, self.binaryBase);
+        if (validOffsetPtr(self.baseGameStaticFieldsAddress)) {
+            LOG(@"[FreeFire] Discovered BaseGame static fields via ARM64: 0x%lx",
+                (unsigned long)self.baseGameStaticFieldsAddress);
+        }
+    }
+    if (validOffsetPtr(self.baseGameStaticFieldsAddress)) {
+        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, self.baseGameStaticFieldsAddress + kBaseGameStatic_sAllEntities))); // 0x08
+        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, self.baseGameStaticFieldsAddress + kBaseGameStatic_sTickedEntities))); // 0x00
+        consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, self.baseGameStaticFieldsAddress + kBaseGameStatic_sAllLEntities))); // 0x10
+    }
+
     uintptr_t bgMethodAddr = self.binaryBase + kMethodInfo_BaseGame_CCtor;
     uintptr_t bgMethodDeref = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgMethodAddr));
     const uintptr_t methodCandidates[2] = { bgMethodDeref, bgMethodAddr };
@@ -1336,7 +1350,10 @@ NS_ASSUME_NONNULL_BEGIN
             remoteCall, currentMatchGame + kMatchGame_LReplicationEntities));
         uintptr_t diagUIScene = CleanPointer(ReadMemorySafe<uintptr_t>(
             remoteCall, currentMatchGame + kBaseGame_UIScene));
-        uintptr_t diagBgStatics = ResolveBaseGameStaticFields(remoteCall, currentMatchGame);
+        uintptr_t diagBgStatics = self.baseGameStaticFieldsAddress;
+        if (!validOffsetPtr(diagBgStatics)) {
+            diagBgStatics = ResolveBaseGameStaticFields(remoteCall, currentMatchGame);
+        }
 
         uintptr_t diagAllEnt = 0;
         if (validOffsetPtr(diagBgStatics)) {
@@ -1382,11 +1399,18 @@ NS_ASSUME_NONNULL_BEGIN
     }
 
     if (containerInfo.count <= 0 || containerInfo.count > 10000) {
-        const char *lobbyHint = (!validOffsetPtr(mg) || mg == 0) ? " [In Lobby - enter match to see enemies]" : "";
+        const char *modeHint = "";
+        if (!validOffsetPtr(mg) || mg == 0) {
+            if (cgQ468 >= 0 || cgL478 >= 0 || cgL4B8 >= 0) {
+                modeHint = " [In Training Ground - enter Shooting Range / Combat Zone to spawn targets]";
+            } else {
+                modeHint = " [In Lobby - enter match to see enemies]";
+            }
+        }
         [self reportStage:
                   [NSString stringWithFormat:@"stage 5/6: entities=%d%s (dict=0x%lx, type=%d, game='%s', ctxMg=0x%lx, %s)",
                                              (int)containerInfo.count,
-                                             lobbyHint,
+                                             modeHint,
                                              (unsigned long)containerInfo.container,
                                              containerInfo.containerType,
                                              matchGameClass,

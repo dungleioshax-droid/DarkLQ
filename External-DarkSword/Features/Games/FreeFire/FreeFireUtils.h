@@ -1308,4 +1308,64 @@ static int CollectArm64StaticCandidates(RemoteCall *remoteCall,
     return found;
 }
 
+static uintptr_t ResolveBaseGameStaticFieldsFromARM64(RemoteCall *remoteCall, uintptr_t binaryBase) {
+    if (!remoteCall || !validOffsetPtr(binaryBase))
+        return 0;
+
+    const uint64_t accessorRVAs[] = {
+        kBaseGame_CCtor,
+        kBaseGame_GetEntityByUniqueID,
+        kBaseGame_RegisterEntity,
+        kBaseGame_HideAllEntity,
+        kBaseGame_UnregisterEntity
+    };
+
+    for (uint64_t rva : accessorRVAs) {
+        uintptr_t candidates[16] = {0};
+        int count = CollectArm64StaticCandidates(remoteCall, binaryBase + rva, candidates, 16);
+        for (int i = 0; i < count; ++i) {
+            uintptr_t cand = CleanPointer(candidates[i]);
+            if (!validOffsetPtr(cand)) continue;
+
+            // 1. Is cand directly the static_fields block?
+            uintptr_t d0 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, cand + kBaseGameStatic_sTickedEntities));
+            uintptr_t d8 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, cand + kBaseGameStatic_sAllEntities));
+            if ((validOffsetPtr(d8) && IsDictionaryObject(remoteCall, d8)) ||
+                (validOffsetPtr(d0) && IsDictionaryObject(remoteCall, d0))) {
+                return cand;
+            }
+
+            // 2. Is cand the Il2CppClass* for BaseGame?
+            uintptr_t sf = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, cand + kIl2CppClass_StaticFields));
+            if (validOffsetPtr(sf)) {
+                uintptr_t sfd0 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, sf + kBaseGameStatic_sTickedEntities));
+                uintptr_t sfd8 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, sf + kBaseGameStatic_sAllEntities));
+                if ((validOffsetPtr(sfd8) && IsDictionaryObject(remoteCall, sfd8)) ||
+                    (validOffsetPtr(sfd0) && IsDictionaryObject(remoteCall, sfd0))) {
+                    return sf;
+                }
+            }
+
+            // 3. Is *cand the Il2CppClass* or static_fields block?
+            uintptr_t deref = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, cand));
+            if (validOffsetPtr(deref)) {
+                uintptr_t dd0 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, deref + kBaseGameStatic_sTickedEntities));
+                uintptr_t dd8 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, deref + kBaseGameStatic_sAllEntities));
+                if ((validOffsetPtr(dd8) && IsDictionaryObject(remoteCall, dd8)) ||
+                    (validOffsetPtr(dd0) && IsDictionaryObject(remoteCall, dd0))) {
+                    return deref;
+                }
+                uintptr_t dsf = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, deref + kIl2CppClass_StaticFields));
+                if (validOffsetPtr(dsf)) {
+                    uintptr_t dsfd8 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, dsf + kBaseGameStatic_sAllEntities));
+                    if (validOffsetPtr(dsfd8) && IsDictionaryObject(remoteCall, dsfd8)) {
+                        return dsf;
+                    }
+                }
+            }
+        }
+    }
+    return 0;
+}
+
 #endif /* FreeFireUtils_h */
