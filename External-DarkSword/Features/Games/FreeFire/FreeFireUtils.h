@@ -813,6 +813,7 @@ static uintptr_t ResolveBaseGameStaticFields(RemoteCall *remoteCall, uintptr_t g
         CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, gameObject + 0x8))
     };
 
+    uintptr_t fallbackSf = 0;
     for (int k = 0; k < 2; ++k) {
         uintptr_t rootKlass = klasses[k];
         if (!validOffsetPtr(rootKlass)) continue;
@@ -826,11 +827,22 @@ static uintptr_t ResolveBaseGameStaticFields(RemoteCall *remoteCall, uintptr_t g
                         return sf;
                     }
                 }
+            } else if (fallbackSf == 0) {
+                // Structural fallback: check if klass->static_fields holds BaseGame dictionaries
+                uintptr_t sf = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_StaticFields));
+                if (validOffsetPtr(sf)) {
+                    uintptr_t d0 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, sf + kBaseGameStatic_sTickedEntities));
+                    uintptr_t d8 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, sf + kBaseGameStatic_sAllEntities));
+                    if ((validOffsetPtr(d0) && IsDictionaryObject(remoteCall, d0)) ||
+                        (validOffsetPtr(d8) && IsDictionaryObject(remoteCall, d8))) {
+                        fallbackSf = sf;
+                    }
+                }
             }
             klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Parent)) & ~7ULL;
         }
     }
-    return 0;
+    return fallbackSf;
 }
 
 static uintptr_t ResolveBaseGameAllEntities(RemoteCall *remoteCall, uintptr_t gameObject) {

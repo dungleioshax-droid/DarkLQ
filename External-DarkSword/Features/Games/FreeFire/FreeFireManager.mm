@@ -987,14 +987,21 @@ NS_ASSUME_NONNULL_BEGIN
     }
 
     // 2. BaseGame static fields via MethodInfo (0x1FB5D028)
-    uintptr_t bgMethod = self.binaryBase + kMethodInfo_BaseGame_CCtor;
-    uintptr_t bgKlass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgMethod + kMethodInfo_Klass)) & ~7ULL;
-    if (validOffsetPtr(bgKlass)) {
-        uintptr_t bgStatics = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgKlass + kIl2CppClass_StaticFields));
-        if (validOffsetPtr(bgStatics)) {
-            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgStatics + kBaseGameStatic_sAllEntities))); // 0x08
-            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgStatics + kBaseGameStatic_sTickedEntities))); // 0x00
-            consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgStatics + kBaseGameStatic_sAllLEntities))); // 0x10
+    uintptr_t bgMethodAddr = self.binaryBase + kMethodInfo_BaseGame_CCtor;
+    uintptr_t bgMethodDeref = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgMethodAddr));
+    const uintptr_t methodCandidates[2] = { bgMethodDeref, bgMethodAddr };
+    for (int m = 0; m < 2; ++m) {
+        uintptr_t mPtr = methodCandidates[m];
+        if (!validOffsetPtr(mPtr)) continue;
+        uintptr_t bgKlass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, mPtr + kMethodInfo_Klass)) & ~7ULL;
+        if (validOffsetPtr(bgKlass)) {
+            uintptr_t bgStatics = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgKlass + kIl2CppClass_StaticFields));
+            if (validOffsetPtr(bgStatics)) {
+                consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgStatics + kBaseGameStatic_sAllEntities))); // 0x08
+                consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgStatics + kBaseGameStatic_sTickedEntities))); // 0x00
+                consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgStatics + kBaseGameStatic_sAllLEntities))); // 0x10
+                break;
+            }
         }
     }
 
@@ -1146,7 +1153,9 @@ NS_ASSUME_NONNULL_BEGIN
     if (validOffsetPtr(cg))
         ReadIl2CppClassName(remoteCall, cg, cgName, sizeof(cgName));
 
-    if (FieldHoldsMatchGame(remoteCall, mg)) {
+    if (validOffsetPtr(mg)) {
+        // In Free Fire, CurrentMatchGame (+0x08) is ONLY non-zero when inside a match (BR/CS).
+        // It must always take top priority over CurrentGame (Lobby/FrontEndGame).
         currentMatchGame = mg;
         matchGameOffset = kGameFacadeStatic_CurrentMatchGame;
     } else if (FieldHoldsMatchGame(remoteCall, cg)) {
@@ -1160,9 +1169,6 @@ NS_ASSUME_NONNULL_BEGIN
         // GameFacade.CurrentGame fallback: in Free Fire, offset 0x0 is guaranteed to be the active BaseGame
         currentMatchGame = cg;
         matchGameOffset = kGameFacadeStatic_CurrentGame;
-    } else if (validOffsetPtr(mg)) {
-        currentMatchGame = mg;
-        matchGameOffset = kGameFacadeStatic_CurrentMatchGame;
     }
 
     // Check previously discovered offset
@@ -1376,9 +1382,11 @@ NS_ASSUME_NONNULL_BEGIN
     }
 
     if (containerInfo.count <= 0 || containerInfo.count > 10000) {
+        const char *lobbyHint = (!validOffsetPtr(mg) || mg == 0) ? " [In Lobby - enter match to see enemies]" : "";
         [self reportStage:
-                  [NSString stringWithFormat:@"stage 5/6: entities=%d (dict=0x%lx, type=%d, game='%s', ctxMg=0x%lx, %s)",
+                  [NSString stringWithFormat:@"stage 5/6: entities=%d%s (dict=0x%lx, type=%d, game='%s', ctxMg=0x%lx, %s)",
                                              (int)containerInfo.count,
+                                             lobbyHint,
                                              (unsigned long)containerInfo.container,
                                              containerInfo.containerType,
                                              matchGameClass,
