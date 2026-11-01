@@ -1341,6 +1341,7 @@ NS_ASSUME_NONNULL_BEGIN
     };
 
     char diagBuf[512] = {0};
+    int cgQ468 = -1, cgQ470 = -1, cgL478 = -1, cgL4B8 = -1;
     {
         uintptr_t diagMatchObj = CleanPointer(ReadMemorySafe<uintptr_t>(
             remoteCall, currentMatchGame + kMatchGame_Match));
@@ -1362,10 +1363,10 @@ NS_ASSUME_NONNULL_BEGIN
         }
 
         // Training target diagnostics on currentMatchGame
-        int cgQ468 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + 0x468));
-        int cgQ470 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + 0x470));
-        int cgL478 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + 0x478));
-        int cgL4B8 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + 0x4B8));
+        cgQ468 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + 0x468));
+        cgQ470 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + 0x470));
+        cgL478 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + 0x478));
+        cgL4B8 = containerCount(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + 0x4B8));
 
         int diagP128 = -1, diagP130 = -1, diagP158 = -1, diagP168 = -1, diagP2A0 = -1;
         if (validOffsetPtr(diagMatchObj)) {
