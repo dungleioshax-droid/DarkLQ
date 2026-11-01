@@ -145,94 +145,98 @@ struct GameListScreen: View {
                     }
                     .buttonStyle(.plain)
 
-                    // Expandable AoV Features Control
-                    GlassCard(palette: palette, cornerRadius: 18) {
-                        VStack(spacing: 12) {
-                            Button {
-                                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                                    isAoVFeaturesExpanded.toggle()
-                                }
-                            } label: {
-                                HStack {
-                                    Image(systemName: "slider.horizontal.3")
-                                        .font(.system(size: 13, weight: .bold))
-                                        .foregroundColor(palette.accent)
-
-                                    Text(AppStrings.tuningFeaturesTitle(language))
-                                        .font(.system(size: 13, weight: .bold, design: .rounded))
-                                        .foregroundColor(palette.primaryText)
-
-                                    Spacer()
-
-                                    Image(systemName: isAoVFeaturesExpanded ? "chevron.up" : "chevron.down")
-                                        .font(.system(size: 12, weight: .bold))
-                                        .foregroundColor(palette.secondaryText)
-                                }
-                            }
-                            .buttonStyle(.plain)
-
-                            if isAoVFeaturesExpanded {
-                                Divider().background(palette.glassBorder)
-
-                                // Toggles List
-                                VStack(spacing: 10) {
-                                    FeatureToggleRow(
-                                        title: AppStrings.espOverlay(language),
-                                        isOn: $manager.aovESPEnabled,
-                                        palette: palette
-                                    )
-                                    FeatureToggleRow(
-                                        title: AppStrings.hackMap(language),
-                                        isOn: $manager.aovHackMapEnabled,
-                                        palette: palette
-                                    )
-                                    FeatureToggleRow(
-                                        title: AppStrings.espSnaplines(language),
-                                        isOn: $manager.aovShowsLine,
-                                        palette: palette
-                                    )
-                                    FeatureToggleRow(
-                                        title: AppStrings.espBoxes(language),
-                                        isOn: $manager.aovShowsBox,
-                                        palette: palette
-                                    )
-                                    FeatureToggleRow(
-                                        title: AppStrings.espHealth(language),
-                                        isOn: $manager.aovShowsHealth,
-                                        palette: palette
-                                    )
-                                    FeatureToggleRow(
-                                        title: AppStrings.espName(language),
-                                        isOn: $manager.aovShowsName,
-                                        palette: palette
-                                    )
-                                    FeatureToggleRow(
-                                        title: AppStrings.espDistance(language),
-                                        isOn: $manager.aovShowsDistance,
-                                        palette: palette
-                                    )
-
-                                    // Camera Height Slider
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        HStack {
-                                            Text(AppStrings.cameraHeightTitle(language))
-                                                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                                .foregroundColor(palette.secondaryText)
-                                            Spacer()
-                                            Text(String(format: "%.1fx", manager.aovCameraHeight))
-                                                .font(.system(size: 12, weight: .bold, design: .monospaced))
-                                                .foregroundColor(palette.accent)
-                                        }
-
-                                        Slider(value: $manager.aovCameraHeight, in: 1.0...2.5, step: 0.1)
-                                            .tint(palette.accent)
+                    // Expandable AoV Features Control (Only in SpringBoard Overlay Mode)
+                    if manager.aovRenderMode == "springboard" {
+                        GlassCard(palette: palette, cornerRadius: 18) {
+                            VStack(spacing: 12) {
+                                Button {
+                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                        isAoVFeaturesExpanded.toggle()
                                     }
-                                    .padding(.top, 4)
+                                } label: {
+                                    HStack {
+                                        Image(systemName: "slider.horizontal.3")
+                                            .font(.system(size: 13, weight: .bold))
+                                            .foregroundColor(palette.accent)
+
+                                        Text(AppStrings.tuningFeaturesTitle(language))
+                                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                                            .foregroundColor(palette.primaryText)
+
+                                        Spacer()
+
+                                        Image(systemName: isAoVFeaturesExpanded ? "chevron.up" : "chevron.down")
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundColor(palette.secondaryText)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+
+                                if isAoVFeaturesExpanded {
+                                    Divider().background(palette.glassBorder)
+
+                                    // Toggles List
+                                    VStack(spacing: 10) {
+                                        FeatureToggleRow(
+                                            title: AppStrings.espOverlay(language),
+                                            isOn: $manager.aovESPEnabled,
+                                            palette: palette
+                                        )
+                                        FeatureToggleRow(
+                                            title: AppStrings.hackMap(language),
+                                            isOn: $manager.aovHackMapEnabled,
+                                            palette: palette
+                                        )
+                                        FeatureToggleRow(
+                                            title: AppStrings.espSnaplines(language),
+                                            isOn: $manager.aovShowsLine,
+                                            palette: palette
+                                        )
+                                        FeatureToggleRow(
+                                            title: AppStrings.espBoxes(language),
+                                            isOn: $manager.aovShowsBox,
+                                            palette: palette
+                                        )
+                                        FeatureToggleRow(
+                                            title: AppStrings.espHealth(language),
+                                            isOn: $manager.aovShowsHealth,
+                                            palette: palette
+                                        )
+                                        FeatureToggleRow(
+                                            title: AppStrings.espName(language),
+                                            isOn: $manager.aovShowsName,
+                                            palette: palette
+                                        )
+                                        FeatureToggleRow(
+                                            title: AppStrings.espDistance(language),
+                                            isOn: $manager.aovShowsDistance,
+                                            palette: palette
+                                        )
+
+                                        // Camera Height Slider
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            HStack {
+                                                Text(AppStrings.cameraHeightTitle(language))
+                                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                                    .foregroundColor(palette.secondaryText)
+                                                Spacer()
+                                                Text(String(format: "%.1fx", manager.aovCameraHeight))
+                                                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                                    .foregroundColor(palette.accent)
+                                            }
+
+                                            Slider(value: $manager.aovCameraHeight, in: 1.0...2.5, step: 0.1)
+                                                .tint(palette.accent)
+                                        }
+                                        .padding(.top, 4)
+                                    }
                                 }
                             }
                         }
+                        .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
                     }
                 }
+                .animation(.spring(response: 0.35, dampingFraction: 0.8), value: manager.aovRenderMode)
                 .padding(.horizontal, 18)
 
                 // MARK: - Free Fire Card & Drawer
@@ -256,71 +260,75 @@ struct GameListScreen: View {
                     }
                     .buttonStyle(.plain)
 
-                    // Expandable Free Fire Features Control
-                    GlassCard(palette: palette, cornerRadius: 18) {
-                        VStack(spacing: 12) {
-                            Button {
-                                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                                    isFreeFireFeaturesExpanded.toggle()
+                    // Expandable Free Fire Features Control (Only in SpringBoard Overlay Mode)
+                    if manager.aovRenderMode == "springboard" {
+                        GlassCard(palette: palette, cornerRadius: 18) {
+                            VStack(spacing: 12) {
+                                Button {
+                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                        isFreeFireFeaturesExpanded.toggle()
+                                    }
+                                } label: {
+                                    HStack {
+                                        Image(systemName: "slider.horizontal.3")
+                                            .font(.system(size: 13, weight: .bold))
+                                            .foregroundColor(palette.accent)
+
+                                        Text(AppStrings.tuningFeaturesTitle(language))
+                                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                                            .foregroundColor(palette.primaryText)
+
+                                        Spacer()
+
+                                        Image(systemName: isFreeFireFeaturesExpanded ? "chevron.up" : "chevron.down")
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundColor(palette.secondaryText)
+                                    }
                                 }
-                            } label: {
-                                HStack {
-                                    Image(systemName: "slider.horizontal.3")
-                                        .font(.system(size: 13, weight: .bold))
-                                        .foregroundColor(palette.accent)
+                                .buttonStyle(.plain)
 
-                                    Text(AppStrings.tuningFeaturesTitle(language))
-                                        .font(.system(size: 13, weight: .bold, design: .rounded))
-                                        .foregroundColor(palette.primaryText)
+                                if isFreeFireFeaturesExpanded {
+                                    Divider().background(palette.glassBorder)
 
-                                    Spacer()
-
-                                    Image(systemName: isFreeFireFeaturesExpanded ? "chevron.up" : "chevron.down")
-                                        .font(.system(size: 12, weight: .bold))
-                                        .foregroundColor(palette.secondaryText)
-                                }
-                            }
-                            .buttonStyle(.plain)
-
-                            if isFreeFireFeaturesExpanded {
-                                Divider().background(palette.glassBorder)
-
-                                VStack(spacing: 10) {
-                                    FeatureToggleRow(
-                                        title: AppStrings.espOverlay(language),
-                                        isOn: $manager.freeFireESPEnabled,
-                                        palette: palette
-                                    )
-                                    FeatureToggleRow(
-                                        title: AppStrings.espSnaplines(language),
-                                        isOn: $manager.freeFireShowsLine,
-                                        palette: palette
-                                    )
-                                    FeatureToggleRow(
-                                        title: AppStrings.espBoxes(language),
-                                        isOn: $manager.freeFireShowsBox,
-                                        palette: palette
-                                    )
-                                    FeatureToggleRow(
-                                        title: AppStrings.espHealth(language),
-                                        isOn: $manager.freeFireShowsHealth,
-                                        palette: palette
-                                    )
-                                    FeatureToggleRow(
-                                        title: AppStrings.espName(language),
-                                        isOn: $manager.freeFireShowsName,
-                                        palette: palette
-                                    )
-                                    FeatureToggleRow(
-                                        title: AppStrings.espDistance(language),
-                                        isOn: $manager.freeFireShowsDistance,
-                                        palette: palette
-                                    )
+                                    VStack(spacing: 10) {
+                                        FeatureToggleRow(
+                                            title: AppStrings.espOverlay(language),
+                                            isOn: $manager.freeFireESPEnabled,
+                                            palette: palette
+                                        )
+                                        FeatureToggleRow(
+                                            title: AppStrings.espSnaplines(language),
+                                            isOn: $manager.freeFireShowsLine,
+                                            palette: palette
+                                        )
+                                        FeatureToggleRow(
+                                            title: AppStrings.espBoxes(language),
+                                            isOn: $manager.freeFireShowsBox,
+                                            palette: palette
+                                        )
+                                        FeatureToggleRow(
+                                            title: AppStrings.espHealth(language),
+                                            isOn: $manager.freeFireShowsHealth,
+                                            palette: palette
+                                        )
+                                        FeatureToggleRow(
+                                            title: AppStrings.espName(language),
+                                            isOn: $manager.freeFireShowsName,
+                                            palette: palette
+                                        )
+                                        FeatureToggleRow(
+                                            title: AppStrings.espDistance(language),
+                                            isOn: $manager.freeFireShowsDistance,
+                                            palette: palette
+                                        )
+                                    }
                                 }
                             }
                         }
+                        .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
                     }
                 }
+                .animation(.spring(response: 0.35, dampingFraction: 0.8), value: manager.aovRenderMode)
                 .padding(.horizontal, 18)
 
                 // Error Message if any

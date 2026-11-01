@@ -9,13 +9,16 @@ import SwiftUI
 
 enum AppTab: Int, CaseIterable {
     case games = 0
-    case logs = 1
-    case settings = 2
+    case espPreview = 1
+    case logs = 2
+    case settings = 3
 
     func icon(isSelected: Bool) -> String {
         switch self {
         case .games:
             return isSelected ? "gamecontroller.fill" : "gamecontroller"
+        case .espPreview:
+            return isSelected ? "eye.fill" : "eye"
         case .logs:
             return isSelected ? "terminal.fill" : "terminal"
         case .settings:
@@ -27,6 +30,8 @@ enum AppTab: Int, CaseIterable {
         switch self {
         case .games:
             return AppStrings.tabGames(language)
+        case .espPreview:
+            return AppStrings.tabESPPreview(language)
         case .logs:
             return AppStrings.tabLogs(language)
         case .settings:
@@ -61,6 +66,12 @@ struct ContentView: View {
                 switch selectedTab {
                 case .games:
                     GameListScreen(
+                        manager: manager,
+                        palette: palette,
+                        language: language
+                    )
+                case .espPreview:
+                    ESPPreviewScreen(
                         manager: manager,
                         palette: palette,
                         language: language

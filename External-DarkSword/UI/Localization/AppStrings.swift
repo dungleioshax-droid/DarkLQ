@@ -38,6 +38,30 @@ enum AppStrings {
         text(language, vietnamese: "Trò chơi", english: "Games")
     }
 
+    static func tabESPPreview(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Xem trước ESP", english: "ESP Preview")
+    }
+
+    static func espPreviewTitle(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Xem trước ESP", english: "ESP Live Preview")
+    }
+
+    static func espPreviewSubtitle(_ language: AppLanguage) -> String {
+        text(
+            language,
+            vietnamese: "Mô phỏng hiển thị ESP trực tiếp trên nhân vật",
+            english: "Live in-game ESP overlay simulation on character"
+        )
+    }
+
+    static func espTargetModel(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Mục tiêu mô phỏng", english: "Simulation Target")
+    }
+
+    static func espCanvasDistance(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Khoảng cách giả lập", english: "Simulated Distance")
+    }
+
     static func tabLogs(_ language: AppLanguage) -> String {
         text(language, vietnamese: "Nhật ký", english: "Logs")
     }
