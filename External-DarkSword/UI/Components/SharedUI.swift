@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 // MARK: - Ambient Glassmorphic Background
 struct AppBackground: View {
@@ -171,23 +172,34 @@ struct GlassSegmentedPicker: View {
     let options: [String]
     @Binding var selectedIndex: Int
     let palette: AppPalette
+    @Namespace private var pickerNamespace
 
     var body: some View {
         HStack(spacing: 4) {
             ForEach(0..<options.count, id: \.self) { index in
+                let isSelected = selectedIndex == index
+
                 Button {
-                    withAnimation(.spring(response: 0.28, dampingFraction: 0.75)) {
+                    guard selectedIndex != index else { return }
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.78)) {
                         selectedIndex = index
                     }
                 } label: {
                     Text(options[index])
-                        .font(.system(size: 13, weight: selectedIndex == index ? .bold : .medium, design: .rounded))
-                        .foregroundColor(selectedIndex == index ? (palette.isDark ? .white : .black) : palette.secondaryText)
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundColor(
+                            isSelected
+                                ? (palette.isDark ? .white : .black)
+                                : palette.secondaryText
+                        )
+                        .lineLimit(1)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 8)
+                        .contentShape(Rectangle())
                         .background(
                             ZStack {
-                                if selectedIndex == index {
+                                if isSelected {
                                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                                         .fill(
                                             palette.isDark
@@ -199,6 +211,7 @@ struct GlassSegmentedPicker: View {
                                                 .stroke(palette.glassBorderHighlight, lineWidth: 1)
                                         )
                                         .shadow(color: palette.glassShadow, radius: 4, x: 0, y: 2)
+                                        .matchedGeometryEffect(id: "activeSegmentHighlight", in: pickerNamespace)
                                 }
                             }
                         )

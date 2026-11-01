@@ -101,10 +101,10 @@ struct GameListScreen: View {
                     .padding(.horizontal, 18)
                 }
 
-                // MARK: - AoV Render Mode Selector
+                // MARK: - Render Mode Selector
                 VStack(alignment: .leading, spacing: 8) {
                     GlassSectionHeader(
-                        title: AppStrings.aovRenderModeTitle(language),
+                        title: AppStrings.renderModeTitle(language),
                         icon: "display",
                         palette: palette
                     )

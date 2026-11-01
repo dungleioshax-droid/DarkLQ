@@ -134,7 +134,11 @@ enum AppStrings {
     }
 
     static func aovRenderModeTitle(_ language: AppLanguage) -> String {
-        text(language, vietnamese: "Chế độ Render AoV", english: "AoV Render Mode")
+        text(language, vietnamese: "Chế độ Render", english: "Render Mode")
+    }
+
+    static func renderModeTitle(_ language: AppLanguage) -> String {
+        text(language, vietnamese: "Chế độ Render", english: "Render Mode")
     }
 
     static func renderInternal(_ language: AppLanguage) -> String {

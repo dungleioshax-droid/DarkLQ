@@ -1366,8 +1366,15 @@ final class DarkSwordManager: ObservableObject {
         return false
     }
 
+    private var cachedAoVStatus: GameStatusInfo?
+    private var cachedFreeFireStatus: GameStatusInfo?
+    private var lastGameStatusVersion = -1
+
     func aovGameStatus() -> GameStatusInfo {
-        GameStatusInfo(
+        if let cached = cachedAoVStatus, lastGameStatusVersion == gameStatusVersion {
+            return cached
+        }
+        let status = GameStatusInfo(
             name: "Liên Quân Mobile",
             bundleIdentifier: aovBundleIdentifier,
             processName: aovProcess,
@@ -1376,12 +1383,18 @@ final class DarkSwordManager: ObservableObject {
             ),
             isRunning: isProcessRunning(aovProcess)
         )
+        cachedAoVStatus = status
+        lastGameStatusVersion = gameStatusVersion
+        return status
     }
 
     func freeFireGameStatus() -> GameStatusInfo {
+        if let cached = cachedFreeFireStatus, lastGameStatusVersion == gameStatusVersion {
+            return cached
+        }
         let process = resolvedFreeFireProcessName()
         let bundleId = freeFireBundleIdentifier
-        return GameStatusInfo(
+        let status = GameStatusInfo(
             name: bundleId.contains("max") ? "Free Fire MAX" : "Free Fire",
             bundleIdentifier: bundleId,
             processName: process,
@@ -1395,9 +1408,14 @@ final class DarkSwordManager: ObservableObject {
                 || isProcessRunning("FreeFireMAX")
                 || isProcessRunning("freefiremax")
         )
+        cachedFreeFireStatus = status
+        lastGameStatusVersion = gameStatusVersion
+        return status
     }
 
     func refreshGameStatuses() {
+        cachedAoVStatus = nil
+        cachedFreeFireStatus = nil
         gameStatusVersion += 1
     }
 
