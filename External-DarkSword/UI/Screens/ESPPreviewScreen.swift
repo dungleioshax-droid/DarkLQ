@@ -377,16 +377,21 @@ private struct CharacterDummyGraphic: View {
     let isAoV: Bool
     let palette: AppPalette
 
+    private var auraColor: Color {
+        (isAoV ? palette.accent : palette.accentPurple).opacity(0.25)
+    }
+
+    private var visorColor: Color {
+        isAoV ? palette.accent : Color.red
+    }
+
     var body: some View {
         ZStack {
             // Tactical Body Aura
             Capsule()
                 .fill(
                     RadialGradient(
-                        colors: [
-                            (isAoV ? palette.accent : palette.accentPurple).opacity(0.25),
-                            Color.clear
-                        ],
+                        gradient: Gradient(colors: [auraColor, Color.clear]),
                         center: .center,
                         startRadius: 5,
                         endRadius: 55
@@ -400,7 +405,7 @@ private struct CharacterDummyGraphic: View {
                 Circle()
                     .fill(
                         LinearGradient(
-                            colors: [palette.primaryText.opacity(0.85), palette.secondaryText.opacity(0.6)],
+                            gradient: Gradient(colors: [palette.primaryText.opacity(0.85), palette.secondaryText.opacity(0.6)]),
                             startPoint: .top,
                             endPoint: .bottom
                         )
@@ -409,7 +414,7 @@ private struct CharacterDummyGraphic: View {
                     .overlay(
                         // Visor Glow
                         RoundedRectangle(cornerRadius: 2)
-                            .fill(isAoV ? palette.accent : Color.red)
+                            .fill(visorColor)
                             .frame(width: 14, height: 4)
                             .offset(y: -1)
                     )
@@ -418,7 +423,7 @@ private struct CharacterDummyGraphic: View {
                 RoundedRectangle(cornerRadius: 6)
                     .fill(
                         LinearGradient(
-                            colors: [palette.secondaryText.opacity(0.75), palette.glassBorderHighlight.opacity(0.5)],
+                            gradient: Gradient(colors: [palette.secondaryText.opacity(0.75), palette.glassBorderHighlight.opacity(0.5)]),
                             startPoint: .top,
                             endPoint: .bottom
                         )

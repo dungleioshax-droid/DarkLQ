@@ -396,7 +396,7 @@ struct GameListScreen: View {
 }
 
 // MARK: - Feature Toggle Row
-private struct FeatureToggleRow: View {
+struct FeatureToggleRow: View {
     let title: String
     @Binding var isOn: Bool
     let palette: AppPalette
