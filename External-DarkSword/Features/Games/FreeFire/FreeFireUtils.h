@@ -570,6 +570,8 @@ struct FreeFireEntityContainer {
     uintptr_t arrayPtr = 0;
     int32_t head = 0;
     int32_t capacity = 0;
+    uint32_t entrySize = 0x18;
+    uint32_t valueOffset = 0x10;
 };
 
 static inline bool InspectEntityContainer(RemoteCall *remoteCall, uintptr_t cand, FreeFireEntityContainer *outContainer) {
@@ -593,6 +595,18 @@ static inline bool InspectEntityContainer(RemoteCall *remoteCall, uintptr_t cand
             outContainer->arrayPtr = entries;
             outContainer->head = 0;
             outContainer->capacity = arrLen;
+            outContainer->entrySize = 0x18;
+            outContainer->valueOffset = 0x10;
+
+            // Auto-detect Dictionary entry layout (e.g. Dictionary<BEADLMGGGGL, Player> with 24-byte struct key -> 0x28 entry size)
+            if (dictCount > 0) {
+                uintptr_t val18 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entries + kArray_Vector + 0x10));
+                uintptr_t val28 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entries + kArray_Vector + 0x20));
+                if (!validOffsetPtr(val18) && validOffsetPtr(val28)) {
+                    outContainer->entrySize = 0x28;
+                    outContainer->valueOffset = 0x20;
+                }
+            }
             return true;
         }
     }
@@ -659,11 +673,13 @@ static inline uintptr_t GetEntityFromContainer(RemoteCall *remoteCall,
 
     switch (c.containerType) {
         case kContainerType_Dictionary: {
-            uintptr_t entryAddr = c.arrayPtr + kArray_Vector + (uint64_t)index * kEntry_Size;
+            uint64_t entrySize = c.entrySize > 0 ? c.entrySize : kEntry_Size;
+            uint64_t valOffset = c.valueOffset > 0 ? c.valueOffset : kEntry_Value;
+            uintptr_t entryAddr = c.arrayPtr + kArray_Vector + (uint64_t)index * entrySize;
             int32_t hashCode = ReadMemorySafe<int32_t>(remoteCall, entryAddr + kEntry_HashCode);
             if (hashCode < 0)
                 return 0;
-            return CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entryAddr + kEntry_Value));
+            return CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entryAddr + valOffset));
         }
         case kContainerType_Queue: {
             if (c.capacity <= 0) return 0;
@@ -804,8 +820,11 @@ static uintptr_t ResolveBaseGameStaticFields(RemoteCall *remoteCall, uintptr_t g
         for (int depth = 0; depth < 8 && validOffsetPtr(klass); ++depth) {
             char name[64] = {0};
             if (ReadKlassName(remoteCall, klass, name, sizeof(name))) {
-                if (strcmp(name, "BaseGame") == 0 || strcmp(name, "COWGameBase") == 0) {
-                    return CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_StaticFields));
+                if (strcmp(name, "BaseGame") == 0) {
+                    uintptr_t sf = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_StaticFields));
+                    if (validOffsetPtr(sf)) {
+                        return sf;
+                    }
                 }
             }
             klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Parent)) & ~7ULL;

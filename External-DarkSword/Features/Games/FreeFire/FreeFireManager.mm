@@ -988,7 +988,7 @@ NS_ASSUME_NONNULL_BEGIN
 
     // 2. BaseGame static fields via MethodInfo (0x1FB5D028)
     uintptr_t bgMethod = self.binaryBase + kMethodInfo_BaseGame_CCtor;
-    uintptr_t bgKlass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgMethod + kMethodInfo_Klass));
+    uintptr_t bgKlass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgMethod + kMethodInfo_Klass)) & ~7ULL;
     if (validOffsetPtr(bgKlass)) {
         uintptr_t bgStatics = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, bgKlass + kIl2CppClass_StaticFields));
         if (validOffsetPtr(bgStatics)) {
