@@ -1456,10 +1456,31 @@ found:
             continue;
         }
 
-        // Check Dead State
-        uint8_t isDead = ReadMemorySafe<uint8_t>(
-            remoteCall, entity + kAttackableEntity_IsDeadFlag);
-        if (isDead != 0) {
+        // Read HP via Fl0rk IPRIDataPool
+        int curHP = 200, maxHP = 200;
+        bool hasValidHP = false;
+        uintptr_t ipriPool = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entity + kPlayer_IPRIDataPool)); // 0x68
+        if (validOffsetPtr(ipriPool)) {
+            uintptr_t v2 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ipriPool + 0x10));
+            if (validOffsetPtr(v2)) {
+                uintptr_t v4_0 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, v2 + 0x20)); // varID 0 = CurHP
+                uintptr_t v4_1 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, v2 + 0x28)); // varID 1 = MaxHP
+                if (validOffsetPtr(v4_0)) {
+                    int hp = ReadMemorySafe<int>(remoteCall, v4_0 + 0x18);
+                    if (hp >= 0 && hp <= 1000) {
+                        curHP = hp;
+                        hasValidHP = true;
+                    }
+                }
+                if (validOffsetPtr(v4_1)) {
+                    int maxH = ReadMemorySafe<int>(remoteCall, v4_1 + 0x18);
+                    if (maxH > 0 && maxH <= 1000) maxHP = maxH;
+                }
+            }
+        }
+
+        // Check Dead State: only skip if confirmed dead (CurHP == 0)
+        if (hasValidHP && curHP <= 0) {
             ++deadSkipped;
             continue;
         }
@@ -1523,25 +1544,6 @@ found:
         }
         if (playerName.length == 0) {
             playerName = [NSString stringWithUTF8String:className];
-        }
-
-        // Read HP via Fl0rk IPRIDataPool
-        int curHP = 200, maxHP = 200;
-        uintptr_t ipriPool = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entity + kPlayer_IPRIDataPool)); // 0x68
-        if (validOffsetPtr(ipriPool)) {
-            uintptr_t v2 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ipriPool + 0x10));
-            if (validOffsetPtr(v2)) {
-                uintptr_t v4_0 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, v2 + 0x20)); // varID 0 = CurHP
-                uintptr_t v4_1 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, v2 + 0x28)); // varID 1 = MaxHP
-                if (validOffsetPtr(v4_0)) {
-                    int hp = ReadMemorySafe<int>(remoteCall, v4_0 + 0x18);
-                    if (hp >= 0 && hp <= 1000) curHP = hp;
-                }
-                if (validOffsetPtr(v4_1)) {
-                    int maxH = ReadMemorySafe<int>(remoteCall, v4_1 + 0x18);
-                    if (maxH > 0 && maxH <= 1000) maxHP = maxH;
-                }
-            }
         }
 
         // Distance from camera to player
