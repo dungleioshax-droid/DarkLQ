@@ -915,9 +915,9 @@ NS_ASSUME_NONNULL_BEGIN
         FreeFireEntityContainer info;
         if (!InspectEntityContainer(remoteCall, cand, &info))
             return;
-        if (firstValidContainer.container == 0)
+        if (info.count > 0 && firstValidContainer.container == 0)
             firstValidContainer = info;
-        if (info.count >= 0 && info.count <= 10000 && info.count > largestCount) {
+        if (info.count > 0 && info.count <= 10000 && info.count > largestCount) {
             largestCount = info.count;
             largestContainer = info;
         }
@@ -925,8 +925,10 @@ NS_ASSUME_NONNULL_BEGIN
             return;
 
         int confirmedEntities = 0;
-        int checkLimit = std::min(info.count, 8);
-        for (int i = 0; i < checkLimit; ++i) {
+        int checkLimit = (info.containerType == kContainerType_Dictionary)
+                             ? std::min(info.capacity, 32)
+                             : std::min(info.count, 16);
+        for (int i = 0; i < checkLimit && confirmedEntities < 5; ++i) {
             uintptr_t entity = GetEntityFromContainer(remoteCall, info, i);
             if (!validOffsetPtr(entity)) continue;
             if (IsSubclassOf(remoteCall, entity, "Player") ||
@@ -948,7 +950,7 @@ NS_ASSUME_NONNULL_BEGIN
             }
         }
 
-        int score = (confirmedEntities > 0 ? 10000 : 0) + info.count;
+        int score = (confirmedEntities > 0 ? 10000 : 0) + (confirmedEntities * 100) + info.count;
         if (score > bestScore) {
             bestScore = score;
             bestContainer = info;
@@ -979,7 +981,8 @@ NS_ASSUME_NONNULL_BEGIN
         if (validOffsetPtr(ctxMatchObj)) {
             const uint64_t matchOffsets[] = {
                 kMatch_Players1, kMatch_Players2, kMatch_Players3, kMatch_Players4, kMatch_Players5,
-                kMatch_PlayerList1, kMatch_PlayerList2, kMatch_AIPawns, kMatch_Teams, kMatch_Vehicles, kMatch_Containers
+                kMatch_PlayerList1, kMatch_PlayerList2, kMatch_AIPawns, kMatch_Teams, kMatch_Vehicles, kMatch_Containers,
+                0x570, 0x5D8, 0x5E0
             };
             for (uint64_t off : matchOffsets) {
                 consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, ctxMatchObj + off)));
@@ -1047,10 +1050,22 @@ NS_ASSUME_NONNULL_BEGIN
         consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kMatchGame_LReplicationEntities)));
 
         matchObj = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kMatchGame_Match));
+        if (!validOffsetPtr(matchObj) || !LooksLikeMatchObject(remoteCall, matchObj)) {
+            const uint64_t candidateMatchOffsets[] = { 0x88, 0x90, 0x98, 0x80, 0xA0, 0xA8, 0xB0 };
+            for (uint64_t mOff : candidateMatchOffsets) {
+                uintptr_t candMatch = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + mOff));
+                if (validOffsetPtr(candMatch) && LooksLikeMatchObject(remoteCall, candMatch)) {
+                    matchObj = candMatch;
+                    break;
+                }
+            }
+        }
+
         if (validOffsetPtr(matchObj)) {
             const uint64_t matchOffsets[] = {
                 kMatch_Players1, kMatch_Players2, kMatch_Players3, kMatch_Players4, kMatch_Players5,
-                kMatch_PlayerList1, kMatch_PlayerList2, kMatch_AIPawns, kMatch_Teams, kMatch_Vehicles, kMatch_Containers
+                kMatch_PlayerList1, kMatch_PlayerList2, kMatch_AIPawns, kMatch_Teams, kMatch_Vehicles, kMatch_Containers,
+                0x570, 0x5D8, 0x5E0
             };
             for (uint64_t off : matchOffsets) {
                 consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, matchObj + off)));
@@ -1059,7 +1074,7 @@ NS_ASSUME_NONNULL_BEGIN
 
         const uint64_t trainingOffsets[] = {
             kTraining_HumanTargetList, kTraining_HumanTargetQueue1, kTraining_HumanTargetQueue2,
-            kTraining_MovableShootingTargetList, kTraining_AltHumanTargetList, 0x448, 0x450, 0x490, 0x3D8, 0x3E8
+            kTraining_MovableShootingTargetList, kTraining_AltHumanTargetList, 0x448, 0x450, 0x490, 0x4C8, 0x4D0, 0x3D8, 0x3E8
         };
         for (uint64_t off : trainingOffsets) {
             consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + off)));
@@ -1068,8 +1083,7 @@ NS_ASSUME_NONNULL_BEGIN
         uiScene = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, currentMatchGame + kBaseGame_UIScene));
         if (validOffsetPtr(uiScene)) {
             const uint64_t sceneDictOffsets[] = {
-                0x128, 0x130, 0x140, 0x148, 0x150, 0x5D8, 0x5E0,
-                0x4C0, 0x1088, 0x20, 0x70, 0x88, 0x90, 0xA0, 0x2F8
+                0x128, 0x130, 0x140, 0x148, 0x150, 0x4C0, 0x1088, 0x20, 0x70, 0x88, 0x90, 0xA0, 0x2F8
             };
             for (uint64_t off : sceneDictOffsets) {
                 consider(CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, uiScene + off)));
@@ -1078,7 +1092,7 @@ NS_ASSUME_NONNULL_BEGIN
     }
 
     // If a confirmed entity container with count > 0 is found, return it immediately
-    if (bestScore > 0) {
+    if (bestScore >= 10000) {
         return bestContainer;
     }
 
@@ -1105,7 +1119,7 @@ NS_ASSUME_NONNULL_BEGIN
     }
 
     if (validOffsetPtr(matchObj)) {
-        for (uint64_t off = 0x10; off <= 0x300; off += sizeof(uintptr_t)) {
+        for (uint64_t off = 0x10; off <= 0x600; off += sizeof(uintptr_t)) {
             uintptr_t cand = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, matchObj + off));
             consider(cand);
         }
@@ -1118,18 +1132,19 @@ NS_ASSUME_NONNULL_BEGIN
         }
     }
 
-    if (bestContainer.container != 0)
+    if (bestScore >= 10000)
         return bestContainer;
 
-    // No entity in any container was positively identified, but a container
-    // that actually holds entries is still far more useful than an empty one:
-    // the snapshot loop validates every element on its own. Returning the first
-    // dictionary we happened to see (often empty) is what made stage 5 report
-    // entities=0 even when populated candidate containers existed.
     if (largestContainer.container != 0 && largestCount > 0)
         return largestContainer;
 
-    return firstValidContainer;
+    if (firstValidContainer.container != 0 && firstValidContainer.count > 0)
+        return firstValidContainer;
+
+    if (bestContainer.container != 0)
+        return bestContainer;
+
+    return emptyContainer;
 }
 
 - (void)updateSnapshot:(RemoteCall *)remoteCall {
@@ -1620,8 +1635,8 @@ NS_ASSUME_NONNULL_BEGIN
         if (a.distance > b.distance) return NSOrderedDescending;
         return NSOrderedSame;
     }];
-    if (entities.count > 5) {
-        [entities removeObjectsInRange:NSMakeRange(5, entities.count - 5)];
+    if (entities.count > 50) {
+        [entities removeObjectsInRange:NSMakeRange(50, entities.count - 50)];
     }
     [entities sortUsingComparator:^NSComparisonResult(FreeFireEntitySnapshot *a, FreeFireEntitySnapshot *b) {
         if (a.actorAddress < b.actorAddress) return NSOrderedAscending;

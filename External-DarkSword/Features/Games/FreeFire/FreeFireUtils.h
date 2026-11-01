@@ -258,32 +258,35 @@ static bool ReadTransformPosition(RemoteCall *remoteCall,
     if (!validOffsetPtr(nativeTransform))
         return false;
 
-    // TransformAccessReadOnly at nativeTransform + 0x38
-    uintptr_t pTransformAccess =
-        CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, nativeTransform + 0x38));
-    int32_t index =
-        ReadMemorySafe<int32_t>(remoteCall, nativeTransform + 0x40);
+    // TransformAccessReadOnly at nativeTransform + 0x38 / 0x40 / 0x30 / 0x28
+    const uint64_t kAccessOffsets[] = { 0x38, 0x40, 0x30, 0x28, 0x48 };
+    for (uint64_t accOff : kAccessOffsets) {
+        uintptr_t pTransformAccess =
+            CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, nativeTransform + accOff));
+        int32_t index =
+            ReadMemorySafe<int32_t>(remoteCall, nativeTransform + accOff + 0x8);
 
-    if (validOffsetPtr(pTransformAccess) && index >= 0 && index < 20000) {
-        uintptr_t pTransformArray =
-            CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, pTransformAccess + 0x18));
-        if (!validOffsetPtr(pTransformArray)) {
-            pTransformArray =
-                CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, pTransformAccess));
-        }
+        if (validOffsetPtr(pTransformAccess) && index >= 0 && index < 20000) {
+            uintptr_t pTransformArray =
+                CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, pTransformAccess + 0x18));
+            if (!validOffsetPtr(pTransformArray)) {
+                pTransformArray =
+                    CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, pTransformAccess));
+            }
 
-        if (validOffsetPtr(pTransformArray)) {
-            uintptr_t matrixAddr = pTransformArray + (uintptr_t)index * 48;
-            UnityMatrix3x4 mat = {};
-            if ([remoteCall remoteRead:matrixAddr to:&mat size:sizeof(mat)]) {
-                Vector3 pos(mat.data[3], mat.data[7], mat.data[11]);
-                if (std::isfinite(pos.x) && std::isfinite(pos.y) &&
-                    std::isfinite(pos.z) &&
-                    (fabsf(pos.x) > 0.01f || fabsf(pos.y) > 0.01f ||
-                     fabsf(pos.z) > 0.01f) &&
-                    fabsf(pos.x) < 50000.0f && fabsf(pos.z) < 50000.0f) {
-                    *outPos = pos;
-                    return true;
+            if (validOffsetPtr(pTransformArray)) {
+                uintptr_t matrixAddr = pTransformArray + (uintptr_t)index * 48;
+                UnityMatrix3x4 mat = {};
+                if ([remoteCall remoteRead:matrixAddr to:&mat size:sizeof(mat)]) {
+                    Vector3 pos(mat.data[3], mat.data[7], mat.data[11]);
+                    if (std::isfinite(pos.x) && std::isfinite(pos.y) &&
+                        std::isfinite(pos.z) &&
+                        (fabsf(pos.x) > 0.01f || fabsf(pos.y) > 0.01f ||
+                         fabsf(pos.z) > 0.01f) &&
+                        fabsf(pos.x) < 50000.0f && fabsf(pos.z) < 50000.0f) {
+                        *outPos = pos;
+                        return true;
+                    }
                 }
             }
         }
@@ -306,32 +309,24 @@ static bool ReadEntityPosition(RemoteCall *remoteCall, uintptr_t entity,
         }
     }
 
-    // 2. Try Vector3 fields in Player / AttackableEntity
-    // Position1 at 0xD0
-    Vector3 v1 = ReadMemorySafe<Vector3>(remoteCall, entity + kPlayer_Position1);
-    if (std::isfinite(v1.x) && std::isfinite(v1.y) && std::isfinite(v1.z) &&
-        (fabsf(v1.x) > 0.1f || fabsf(v1.z) > 0.1f) &&
-        fabsf(v1.x) < 50000.0f && fabsf(v1.z) < 50000.0f) {
-        *outPos = v1;
-        return true;
-    }
+    // 2. Try Vector3 fields in Player / AttackableEntity / Training Targets
+    static const uint64_t kCandidateVecOffsets[] = {
+        kPlayer_Position1, // 0xD0
+        kPlayer_Position2, // 0x10C
+        0x214,             // <KFIOIKIHPPD>k__BackingField
+        0x238,             // DICMMHDGPII
+        kPlayer_Position3, // 0x270
+        0x24D4             // MGIGJOPFDMD (Training Human Target)
+    };
 
-    // Position2 at 0x10C
-    Vector3 v2 = ReadMemorySafe<Vector3>(remoteCall, entity + kPlayer_Position2);
-    if (std::isfinite(v2.x) && std::isfinite(v2.y) && std::isfinite(v2.z) &&
-        (fabsf(v2.x) > 0.1f || fabsf(v2.z) > 0.1f) &&
-        fabsf(v2.x) < 50000.0f && fabsf(v2.z) < 50000.0f) {
-        *outPos = v2;
-        return true;
-    }
-
-    // Position3 at 0x270
-    Vector3 v3 = ReadMemorySafe<Vector3>(remoteCall, entity + kPlayer_Position3);
-    if (std::isfinite(v3.x) && std::isfinite(v3.y) && std::isfinite(v3.z) &&
-        (fabsf(v3.x) > 0.1f || fabsf(v3.z) > 0.1f) &&
-        fabsf(v3.x) < 50000.0f && fabsf(v3.z) < 50000.0f) {
-        *outPos = v3;
-        return true;
+    for (uint64_t off : kCandidateVecOffsets) {
+        Vector3 v = ReadMemorySafe<Vector3>(remoteCall, entity + off);
+        if (std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z) &&
+            (fabsf(v.x) > 0.1f || fabsf(v.z) > 0.1f) &&
+            fabsf(v.x) < 50000.0f && fabsf(v.z) < 50000.0f) {
+            *outPos = v;
+            return true;
+        }
     }
 
     return false;
@@ -574,6 +569,101 @@ struct FreeFireEntityContainer {
     uint32_t valueOffset = 0x10;
 };
 
+static inline bool DetectDictionaryLayout(RemoteCall *remoteCall, uintptr_t entries,
+                                           int32_t dictCount, int32_t arrLen,
+                                           uint32_t *outEntrySize, uint32_t *outValOffset) {
+    if (!remoteCall || !validOffsetPtr(entries) || arrLen <= 0 || !outEntrySize || !outValOffset)
+        return false;
+
+    // Default layout (e.g. Dictionary<uint, Entity>, Dictionary<byte, Player>, etc.)
+    *outEntrySize = 0x18;
+    *outValOffset = 0x10;
+
+    int scanCount = std::min(arrLen, 16);
+    int valid28 = 0;
+    int valid18 = 0;
+    int confirmed28 = 0;
+    int confirmed18 = 0;
+
+    // Test Layout 0x28 (stride = 0x28, valOffset = 0x20)
+    for (int i = 0; i < scanCount; ++i) {
+        uintptr_t entryAddr = entries + kArray_Vector + (uint64_t)i * 0x28;
+        int32_t hc = ReadMemorySafe<int32_t>(remoteCall, entryAddr + kEntry_HashCode);
+        if (hc < 0) continue;
+        uintptr_t val = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entryAddr + 0x20));
+        if (validOffsetPtr(val)) {
+            valid28++;
+            uintptr_t klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, val)) & ~7ULL;
+            if (validOffsetPtr(klass)) {
+                char className[64] = {0};
+                if (ReadKlassName(remoteCall, klass, className, sizeof(className))) {
+                    if (strstr(className, "Player") != NULL ||
+                        strstr(className, "Entity") != NULL ||
+                        strstr(className, "Target") != NULL ||
+                        strstr(className, "Pawn") != NULL ||
+                        strstr(className, "Human") != NULL ||
+                        strstr(className, "Dummy") != NULL ||
+                        strstr(className, "Stand") != NULL) {
+                        confirmed28 += 10;
+                    }
+                }
+            }
+            Vector3 pos = Vector3::zero();
+            if (ReadEntityPosition(remoteCall, val, &pos)) {
+                confirmed28 += 10;
+            }
+        }
+    }
+
+    // Test Layout 0x18 (stride = 0x18, valOffset = 0x10)
+    for (int i = 0; i < scanCount; ++i) {
+        uintptr_t entryAddr = entries + kArray_Vector + (uint64_t)i * 0x18;
+        int32_t hc = ReadMemorySafe<int32_t>(remoteCall, entryAddr + kEntry_HashCode);
+        if (hc < 0) continue;
+        uintptr_t val = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entryAddr + 0x10));
+        if (validOffsetPtr(val)) {
+            valid18++;
+            uintptr_t klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, val)) & ~7ULL;
+            if (validOffsetPtr(klass)) {
+                char className[64] = {0};
+                if (ReadKlassName(remoteCall, klass, className, sizeof(className))) {
+                    if (strstr(className, "Player") != NULL ||
+                        strstr(className, "Entity") != NULL ||
+                        strstr(className, "Target") != NULL ||
+                        strstr(className, "Pawn") != NULL ||
+                        strstr(className, "Human") != NULL ||
+                        strstr(className, "Dummy") != NULL ||
+                        strstr(className, "Stand") != NULL) {
+                        confirmed18 += 10;
+                    }
+                }
+            }
+            Vector3 pos = Vector3::zero();
+            if (ReadEntityPosition(remoteCall, val, &pos)) {
+                confirmed18 += 10;
+            }
+        }
+    }
+
+    if (confirmed28 > confirmed18) {
+        *outEntrySize = 0x28;
+        *outValOffset = 0x20;
+        return true;
+    } else if (confirmed18 > 0) {
+        *outEntrySize = 0x18;
+        *outValOffset = 0x10;
+        return true;
+    } else if (valid28 > valid18 && valid28 > 0) {
+        *outEntrySize = 0x28;
+        *outValOffset = 0x20;
+        return true;
+    } else {
+        *outEntrySize = 0x18;
+        *outValOffset = 0x10;
+        return true;
+    }
+}
+
 static inline bool InspectEntityContainer(RemoteCall *remoteCall, uintptr_t cand, FreeFireEntityContainer *outContainer) {
     if (!remoteCall || !outContainer)
         return false;
@@ -598,14 +688,10 @@ static inline bool InspectEntityContainer(RemoteCall *remoteCall, uintptr_t cand
             outContainer->entrySize = 0x18;
             outContainer->valueOffset = 0x10;
 
-            // Auto-detect Dictionary entry layout (e.g. Dictionary<BEADLMGGGGL, Player> with 24-byte struct key -> 0x28 entry size)
             if (dictCount > 0) {
-                uintptr_t val18 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entries + kArray_Vector + 0x10));
-                uintptr_t val28 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entries + kArray_Vector + 0x20));
-                if (!validOffsetPtr(val18) && validOffsetPtr(val28)) {
-                    outContainer->entrySize = 0x28;
-                    outContainer->valueOffset = 0x20;
-                }
+                DetectDictionaryLayout(remoteCall, entries, dictCount, arrLen,
+                                       &outContainer->entrySize,
+                                       &outContainer->valueOffset);
             }
             return true;
         }
@@ -625,6 +711,8 @@ static inline bool InspectEntityContainer(RemoteCall *remoteCall, uintptr_t cand
             outContainer->arrayPtr = qArray;
             outContainer->head = qHead;
             outContainer->capacity = arrLen;
+            outContainer->entrySize = sizeof(uintptr_t);
+            outContainer->valueOffset = 0;
             return true;
         }
     }
@@ -642,6 +730,8 @@ static inline bool InspectEntityContainer(RemoteCall *remoteCall, uintptr_t cand
             outContainer->arrayPtr = items;
             outContainer->head = 0;
             outContainer->capacity = arrLen;
+            outContainer->entrySize = sizeof(uintptr_t);
+            outContainer->valueOffset = 0;
             return true;
         }
     }
@@ -658,6 +748,8 @@ static inline bool InspectEntityContainer(RemoteCall *remoteCall, uintptr_t cand
             outContainer->arrayPtr = cand;
             outContainer->head = 0;
             outContainer->capacity = directArrLen;
+            outContainer->entrySize = sizeof(uintptr_t);
+            outContainer->valueOffset = 0;
             return true;
         }
     }
@@ -668,11 +760,13 @@ static inline bool InspectEntityContainer(RemoteCall *remoteCall, uintptr_t cand
 static inline uintptr_t GetEntityFromContainer(RemoteCall *remoteCall,
                                                const FreeFireEntityContainer &c,
                                                int32_t index) {
-    if (!remoteCall || !validOffsetPtr(c.arrayPtr) || index < 0 || index >= c.count)
+    if (!remoteCall || !validOffsetPtr(c.arrayPtr) || index < 0)
         return 0;
 
     switch (c.containerType) {
         case kContainerType_Dictionary: {
+            if (index >= c.capacity)
+                return 0;
             uint64_t entrySize = c.entrySize > 0 ? c.entrySize : kEntry_Size;
             uint64_t valOffset = c.valueOffset > 0 ? c.valueOffset : kEntry_Value;
             uintptr_t entryAddr = c.arrayPtr + kArray_Vector + (uint64_t)index * entrySize;
@@ -682,7 +776,7 @@ static inline uintptr_t GetEntityFromContainer(RemoteCall *remoteCall,
             return CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, entryAddr + valOffset));
         }
         case kContainerType_Queue: {
-            if (c.capacity <= 0) return 0;
+            if (c.capacity <= 0 || index >= c.count) return 0;
             int32_t qIndex = (c.head + index) % c.capacity;
             return CleanPointer(ReadMemorySafe<uintptr_t>(
                 remoteCall, c.arrayPtr + kArray_Vector + (uint64_t)qIndex * sizeof(uintptr_t)));
@@ -690,6 +784,7 @@ static inline uintptr_t GetEntityFromContainer(RemoteCall *remoteCall,
         case kContainerType_List:
         case kContainerType_Array:
         default: {
+            if (index >= c.count) return 0;
             return CleanPointer(ReadMemorySafe<uintptr_t>(
                 remoteCall, c.arrayPtr + kArray_Vector + (uint64_t)index * sizeof(uintptr_t)));
         }
@@ -821,22 +916,25 @@ static uintptr_t ResolveBaseGameStaticFields(RemoteCall *remoteCall, uintptr_t g
         for (int depth = 0; depth < 8 && validOffsetPtr(klass); ++depth) {
             char name[64] = {0};
             if (ReadKlassName(remoteCall, klass, name, sizeof(name))) {
-                if (strcmp(name, "BaseGame") == 0) {
+                if (strcmp(name, "BaseGame") == 0 || strstr(name, "BaseGame") != NULL) {
                     uintptr_t sf = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_StaticFields));
                     if (validOffsetPtr(sf)) {
                         return sf;
                     }
                 }
-            } else if (fallbackSf == 0) {
-                // Structural fallback: check if klass->static_fields holds BaseGame dictionaries
-                uintptr_t sf = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_StaticFields));
-                if (validOffsetPtr(sf)) {
-                    uintptr_t d0 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, sf + kBaseGameStatic_sTickedEntities));
-                    uintptr_t d8 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, sf + kBaseGameStatic_sAllEntities));
-                    if ((validOffsetPtr(d0) && IsDictionaryObject(remoteCall, d0)) ||
-                        (validOffsetPtr(d8) && IsDictionaryObject(remoteCall, d8))) {
-                        fallbackSf = sf;
-                    }
+            }
+
+            // Structural check: check if klass->static_fields holds BaseGame dictionaries
+            uintptr_t sf = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_StaticFields));
+            if (validOffsetPtr(sf)) {
+                uintptr_t d0 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, sf + kBaseGameStatic_sTickedEntities));
+                uintptr_t d8 = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, sf + kBaseGameStatic_sAllEntities));
+                if ((validOffsetPtr(d8) && IsDictionaryObject(remoteCall, d8)) ||
+                    (validOffsetPtr(d0) && IsDictionaryObject(remoteCall, d0))) {
+                    return sf;
+                }
+                if (fallbackSf == 0 && (validOffsetPtr(d8) || validOffsetPtr(d0))) {
+                    fallbackSf = sf;
                 }
             }
             klass = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, klass + kIl2CppClass_Parent)) & ~7ULL;
@@ -857,19 +955,18 @@ static uintptr_t ResolveBaseGameAllEntities(RemoteCall *remoteCall, uintptr_t ga
             kBaseGameStatic_sTickedEntities,
             kBaseGameStatic_sAllLEntities
         };
-        uintptr_t fallbackDict = 0;
         for (uint64_t slot : slots) {
             uintptr_t dict = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, staticFields + slot));
             if (validOffsetPtr(dict) && IsDictionaryObject(remoteCall, dict)) {
                 int32_t cnt = ReadMemorySafe<int32_t>(remoteCall, dict + kDictionary_Count);
                 if (cnt > 0)
                     return dict;
-                if (fallbackDict == 0)
-                    fallbackDict = dict;
             }
         }
-        if (fallbackDict != 0)
-            return fallbackDict;
+        uintptr_t allEnt = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, staticFields + kBaseGameStatic_sAllEntities));
+        if (validOffsetPtr(allEnt) && IsDictionaryObject(remoteCall, allEnt)) {
+            return allEnt;
+        }
     }
 
     // Approach 2: Structural walk up parent chain of gameObject
