@@ -259,6 +259,11 @@ static uint64_t ds_remote_get_object_on_main(RemoteCall *process, uint64_t targe
     return invoked ? result : 0;
 }
 
+static uint64_t ds_remote_get_u64_on_main(RemoteCall *process, uint64_t target,
+                                          const char *selectorName) {
+    return ds_remote_get_object_on_main(process, target, selectorName);
+}
+
 static uint64_t ds_remote_get_retained_object_on_main(RemoteCall *process, uint64_t target,
                                                       const char *selectorName) {
     uint64_t result = 0;
@@ -1403,7 +1408,6 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
     lastESPUpdate = now;
 
     CGFloat sw = self.cachedScreenWidth > 0 ? self.cachedScreenWidth : MAX(kWidth, kHeight);
-    CGFloat sh = self.cachedScreenHeight > 0 ? self.cachedScreenHeight : MIN(kWidth, kHeight);
     CGPoint startPoint = CGPointMake(sw * 0.5, 38.0); // Exact internal style: top-center below notch (x=mid, y=38)
 
     NSUInteger targetCount = targets.count;
