@@ -145,9 +145,8 @@ struct GameListScreen: View {
                     }
                     .buttonStyle(.plain)
 
-                    // Expandable AoV Features Control (Only in SpringBoard Overlay Mode)
-                    if manager.aovRenderMode == "springboard" {
-                        GlassCard(palette: palette, cornerRadius: 18) {
+                    // Expandable AoV Features Control
+                    GlassCard(palette: palette, cornerRadius: 18) {
                             VStack(spacing: 12) {
                                 Button {
                                     withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
@@ -234,7 +233,6 @@ struct GameListScreen: View {
                             }
                         }
                         .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
-                    }
                 }
                 .animation(.spring(response: 0.35, dampingFraction: 0.8), value: manager.aovRenderMode)
                 .padding(.horizontal, 18)
@@ -260,9 +258,8 @@ struct GameListScreen: View {
                     }
                     .buttonStyle(.plain)
 
-                    // Expandable Free Fire Features Control (Only in SpringBoard Overlay Mode)
-                    if manager.aovRenderMode == "springboard" {
-                        GlassCard(palette: palette, cornerRadius: 18) {
+                    // Expandable Free Fire Features Control
+                    GlassCard(palette: palette, cornerRadius: 18) {
                             VStack(spacing: 12) {
                                 Button {
                                     withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
@@ -326,7 +323,6 @@ struct GameListScreen: View {
                             }
                         }
                         .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
-                    }
                 }
                 .animation(.spring(response: 0.35, dampingFraction: 0.8), value: manager.aovRenderMode)
                 .padding(.horizontal, 18)
