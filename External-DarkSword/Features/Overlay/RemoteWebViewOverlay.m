@@ -555,9 +555,13 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
         if (delegateWindow) {
             uint64_t isHidden = ds_remote_get_u64_on_main(self.remoteCall, delegateWindow, "isHidden");
             if (!isHidden) {
-                self.window = delegateWindow;
-                LOG(@"[RemoteWebViewOverlay] FOUND UIWindow via delegate = 0x%llx", delegateWindow);
-                return YES;
+                uint64_t boundsSEL = [self getSelector:"bounds"];
+                CGRect b = boundsSEL ? remote_getCGRect(self.remoteCall, delegateWindow, boundsSEL) : CGRectZero;
+                if (b.size.width > 50.0 && b.size.height > 50.0) {
+                    self.window = delegateWindow;
+                    LOG(@"[RemoteWebViewOverlay] FOUND UIWindow via delegate = 0x%llx (%.0fx%.0f)", delegateWindow, b.size.width, b.size.height);
+                    return YES;
+                }
             }
         }
     }
@@ -567,9 +571,13 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
     if (keyWindow) {
         uint64_t isHidden = ds_remote_get_u64_on_main(self.remoteCall, keyWindow, "isHidden");
         if (!isHidden) {
-            self.window = keyWindow;
-            LOG(@"[RemoteWebViewOverlay] FOUND UIWindow via keyWindow = 0x%llx", keyWindow);
-            return YES;
+            uint64_t boundsSEL = [self getSelector:"bounds"];
+            CGRect b = boundsSEL ? remote_getCGRect(self.remoteCall, keyWindow, boundsSEL) : CGRectZero;
+            if (b.size.width > 50.0 && b.size.height > 50.0) {
+                self.window = keyWindow;
+                LOG(@"[RemoteWebViewOverlay] FOUND UIWindow via keyWindow = 0x%llx (%.0fx%.0f)", keyWindow, b.size.width, b.size.height);
+                return YES;
+            }
         }
     }
 
@@ -708,9 +716,8 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
 - (void)makeWebViewTransparent:(RemoteObjectRef)view {
     RemoteObjectRef uiColorClass = [self getClass:"UIColor"];
     uint64_t clearSelector = [self getSelector:"clearColor"];
-    RemoteObjectRef clearColor = 0;
     if (uiColorClass && clearSelector) {
-        clearColor = remote_msg_on_main_thread(
+        RemoteObjectRef clearColor = remote_msg_on_main_thread(
             self.remoteCall, uiColorClass, clearSelector, NULL, NULL, 0);
         if (clearColor) {
             uint64_t backgroundSelector =
@@ -724,25 +731,6 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
         }
     }
     [self setView:view boolValue:NO selector:"setOpaque:"];
-
-    // Also clear scrollView background color and opacity
-    uint64_t scrollViewSEL = [self getSelector:"scrollView"];
-    if (scrollViewSEL) {
-        RemoteObjectRef scrollView = remote_msg_on_main_thread(
-            self.remoteCall, view, scrollViewSEL, NULL, NULL, 0);
-        if (scrollView) {
-            [self setView:scrollView boolValue:NO selector:"setOpaque:"];
-            if (clearColor) {
-                uint64_t backgroundSelector = [self getSelector:"setBackgroundColor:"];
-                if (backgroundSelector) {
-                    const void *params[] = {&clearColor};
-                    size_t sizes[] = {sizeof(clearColor)};
-                    remote_msg_on_main_thread(self.remoteCall, scrollView,
-                                              backgroundSelector, params, sizes, 1);
-                }
-            }
-        }
-    }
 }
 
 - (RemoteObjectRef)createWebViewWithResource:(NSString *)resourceName

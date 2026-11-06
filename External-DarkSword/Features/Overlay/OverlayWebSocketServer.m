@@ -124,7 +124,7 @@ static NSString *const kOverlayWebSocketGUID =
           setsockopt(clientFD, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
           struct timeval sendTimeout = {};
           sendTimeout.tv_sec = 0;
-          sendTimeout.tv_usec = 15000; // 15ms timeout to drop quickly on backpressure
+          sendTimeout.tv_usec = 50000; // 50ms
           setsockopt(clientFD, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout,
                      sizeof(sendTimeout));
           int sndBuf = 256 * 1024;
@@ -395,7 +395,9 @@ static NSString *const kOverlayWebSocketGUID =
 
     [self.writeLock lock];
     BOOL didWrite = [self writeAll:clientFD data:frame];
+    int writeErr = errno;
     [self.writeLock unlock];
+    errno = writeErr;
     return didWrite;
 }
 
