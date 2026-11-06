@@ -124,10 +124,10 @@ static NSString *const kOverlayWebSocketGUID =
           setsockopt(clientFD, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
           struct timeval sendTimeout = {};
           sendTimeout.tv_sec = 0;
-          sendTimeout.tv_usec = 50000; // 50ms
+          sendTimeout.tv_usec = 15000; // 15ms timeout to drop quickly on backpressure
           setsockopt(clientFD, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout,
                      sizeof(sendTimeout));
-          int sndBuf = 128 * 1024;
+          int sndBuf = 256 * 1024;
           setsockopt(clientFD, SOL_SOCKET, SO_SNDBUF, &sndBuf, sizeof(sndBuf));
 
           dispatch_async(self.ioQueue, ^{
@@ -353,6 +353,11 @@ static NSString *const kOverlayWebSocketGUID =
     for (NSNumber *client in espClients) {
         int fd = client.intValue;
         if (![self sendFrameToClient:fd opcode:0x1 payload:data]) {
+            int err = errno;
+            if (err == EAGAIN || err == EWOULDBLOCK) {
+                // Client buffer full: drop this frame instead of disconnecting
+                continue;
+            }
             [self.clientsLock lock];
             [self.clients removeObject:client];
             [self.clientRoles removeObjectForKey:client];

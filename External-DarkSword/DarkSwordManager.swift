@@ -502,22 +502,19 @@ final class DarkSwordManager: ObservableObject {
     // The overlay menu is shared by both games, so resolve which game is
     // currently connected before syncing or applying menu options.
     private var activeOverlayGame: String {
-        let process = connectedProcess.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        )
-        if process.lowercased().contains("freefire") || process.lowercased().contains("ffmax") {
-            return "freefire"
-        }
-        if !process.isEmpty, process == aovProcess {
-            return "aov"
-        }
         if freeFireManager != nil && aovManager == nil {
             return "freefire"
         }
         if aovManager != nil && freeFireManager == nil {
             return "aov"
         }
-        if !process.isEmpty {
+        let process = connectedProcess.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ).lowercased()
+        if process.contains("freefire") || process.contains("ffmax") || process == resolvedFreeFireProcessName().lowercased() {
+            return "freefire"
+        }
+        if process.contains("kgvn") || process.contains("aov") || process == aovProcess.lowercased() {
             return "aov"
         }
         if freeFireManager != nil {
@@ -1591,17 +1588,22 @@ final class DarkSwordManager: ObservableObject {
         case "aovESPEnabled":
             guard let bool = boolValue(value) else { return false }
             aovESPEnabled = bool
+            aovManager?.isESPEnabled = bool
             return true
         case "freeFireESPEnabled":
             guard let bool = boolValue(value) else { return false }
             freeFireESPEnabled = bool
+            freeFireManager?.isESPEnabled = bool
             return true
         case "espEnabled", "esp":
             guard let bool = boolValue(value) else { return false }
-            if game == "freefire" {
+            if game == "freefire" || freeFireManager != nil {
                 freeFireESPEnabled = bool
-            } else {
+                freeFireManager?.isESPEnabled = bool
+            }
+            if game == "aov" || aovManager != nil {
                 aovESPEnabled = bool
+                aovManager?.isESPEnabled = bool
             }
             return true
         case "aovHackMapEnabled":
@@ -1625,81 +1627,106 @@ final class DarkSwordManager: ObservableObject {
         case "aovShowsLine":
             guard let bool = boolValue(value) else { return false }
             aovShowsLine = bool
+            aovManager?.showsLine = bool
             return true
         case "freeFireShowsLine":
             guard let bool = boolValue(value) else { return false }
             freeFireShowsLine = bool
+            freeFireManager?.showsLine = bool
             return true
         case "showsLine", "line":
             guard let bool = boolValue(value) else { return false }
-            if game == "freefire" {
+            if game == "freefire" || freeFireManager != nil {
                 freeFireShowsLine = bool
-            } else {
+                freeFireManager?.showsLine = bool
+            }
+            if game == "aov" || aovManager != nil {
                 aovShowsLine = bool
+                aovManager?.showsLine = bool
             }
             return true
         case "aovShowsBox":
             guard let bool = boolValue(value) else { return false }
             aovShowsBox = bool
+            aovManager?.showsBox = bool
             return true
         case "freeFireShowsBox":
             guard let bool = boolValue(value) else { return false }
             freeFireShowsBox = bool
+            freeFireManager?.showsBox = bool
             return true
         case "showsBox", "box":
             guard let bool = boolValue(value) else { return false }
-            if game == "freefire" {
+            if game == "freefire" || freeFireManager != nil {
                 freeFireShowsBox = bool
-            } else {
+                freeFireManager?.showsBox = bool
+            }
+            if game == "aov" || aovManager != nil {
                 aovShowsBox = bool
+                aovManager?.showsBox = bool
             }
             return true
         case "aovShowsHealth":
             guard let bool = boolValue(value) else { return false }
             aovShowsHealth = bool
+            aovManager?.showsHealth = bool
             return true
         case "freeFireShowsHealth":
             guard let bool = boolValue(value) else { return false }
             freeFireShowsHealth = bool
+            freeFireManager?.showsHealth = bool
             return true
         case "showsHealth", "health":
             guard let bool = boolValue(value) else { return false }
-            if game == "freefire" {
+            if game == "freefire" || freeFireManager != nil {
                 freeFireShowsHealth = bool
-            } else {
+                freeFireManager?.showsHealth = bool
+            }
+            if game == "aov" || aovManager != nil {
                 aovShowsHealth = bool
+                aovManager?.showsHealth = bool
             }
             return true
         case "aovShowsName":
             guard let bool = boolValue(value) else { return false }
             aovShowsName = bool
+            aovManager?.showsName = bool
             return true
         case "freeFireShowsName":
             guard let bool = boolValue(value) else { return false }
             freeFireShowsName = bool
+            freeFireManager?.showsName = bool
             return true
         case "showsName", "name":
             guard let bool = boolValue(value) else { return false }
-            if game == "freefire" {
+            if game == "freefire" || freeFireManager != nil {
                 freeFireShowsName = bool
-            } else {
+                freeFireManager?.showsName = bool
+            }
+            if game == "aov" || aovManager != nil {
                 aovShowsName = bool
+                aovManager?.showsName = bool
             }
             return true
         case "aovShowsDistance":
             guard let bool = boolValue(value) else { return false }
             aovShowsDistance = bool
+            aovManager?.showsDistance = bool
             return true
         case "freeFireShowsDistance":
             guard let bool = boolValue(value) else { return false }
             freeFireShowsDistance = bool
+            freeFireManager?.showsDistance = bool
             return true
         case "showsDistance", "distance":
             guard let bool = boolValue(value) else { return false }
-            if game == "freefire" {
+            if game == "freefire" || freeFireManager != nil {
                 freeFireShowsDistance = bool
-            } else {
+                freeFireManager?.showsDistance = bool
+            }
+            if game == "aov" || aovManager != nil {
                 aovShowsDistance = bool
+                aovManager?.showsDistance = bool
             }
             return true
         case "aovCameraHeight":

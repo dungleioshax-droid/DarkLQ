@@ -54,6 +54,8 @@
         var dpr = window.devicePixelRatio || 1;
         canvas.width = Math.round(screenWidth * dpr);
         canvas.height = Math.round(screenHeight * dpr);
+        canvas.style.width = screenWidth + "px";
+        canvas.style.height = screenHeight + "px";
         context.setTransform(dpr, 0, 0, dpr, 0, 0);
         if (viewportTimer) clearTimeout(viewportTimer);
         viewportTimer = setTimeout(function () {
@@ -68,27 +70,37 @@
 
       function healthColor(hp, maxHp, alpha) {
         var ratio = maxHp > 0 ? hp / maxHp : 0;
-        if (ratio < 0.3) return "rgba(180,45,45," + alpha + ")";
-        if (ratio <= 0.6) return "rgba(180,180,45," + alpha + ")";
-        return "rgba(45,180,45," + alpha + ")";
+        if (ratio < 0.3) return "rgba(235,45,45," + alpha + ")";
+        if (ratio <= 0.6) return "rgba(240,200,45," + alpha + ")";
+        return "rgba(45,225,45," + alpha + ")";
       }
 
-      function drawLine(sx, sy) {
-        var endY = sy - 15;
+      function drawLine(sx, sy, headX, headY) {
+        var tx = headX || sx;
+        var ty = headY || (sy - 15);
         context.beginPath();
         context.moveTo(screenWidth / 2, 38);
-        context.lineTo(sx, endY);
-        context.strokeStyle = "rgba(255,255,255,0.70)";
+        context.lineTo(tx, ty);
+        context.strokeStyle = "rgba(0,0,0,0.55)";
+        context.lineWidth = 2.4;
+        context.stroke();
+        context.beginPath();
+        context.moveTo(screenWidth / 2, 38);
+        context.lineTo(tx, ty);
+        context.strokeStyle = "rgba(255,255,255,0.85)";
         context.lineWidth = 1.2;
         context.stroke();
         context.beginPath();
-        context.arc(sx, endY, 3, 0, Math.PI * 2);
+        context.arc(tx, ty, 3, 0, Math.PI * 2);
         context.fillStyle = "rgba(0,255,0,1)";
         context.fill();
       }
 
       function drawBox(box) {
-        context.strokeStyle = "rgba(255,255,255,0.7)";
+        context.strokeStyle = "rgba(0,0,0,0.65)";
+        context.lineWidth = 2.5;
+        context.strokeRect(box.x, box.y, box.w, box.h);
+        context.strokeStyle = "rgba(255,60,60,0.95)";
         context.lineWidth = 1.25;
         context.strokeRect(box.x, box.y, box.w, box.h);
       }
@@ -96,8 +108,8 @@
       function drawHealthBar(box, hp, maxHp) {
         var ratio = clamp(maxHp > 0 ? hp / maxHp : 0, 0, 1);
         var barY = box.y - 7;
-        context.fillStyle = "rgba(0,0,0,0.55)";
-        context.fillRect(box.x - 0.5, barY - 0.5, box.w + 1, 5);
+        context.fillStyle = "rgba(0,0,0,0.75)";
+        context.fillRect(box.x - 1, barY - 1, box.w + 2, 6);
         context.fillStyle = healthColor(hp, maxHp, 1);
         context.fillRect(box.x, barY, box.w * ratio, 4);
       }
@@ -107,20 +119,20 @@
         context.font = "700 11px -apple-system, Helvetica, Arial, sans-serif";
         context.textAlign = "center";
         context.textBaseline = "top";
-        context.fillStyle = "rgba(0,0,0,0.65)";
-        context.fillText(text, sx + 1, sy + 10);
+        context.fillStyle = "rgba(0,0,0,0.8)";
+        context.fillText(text, sx + 1, sy + 11);
         context.fillStyle = "rgba(255,255,100,1)";
-        context.fillText(text, sx, sy + 9);
+        context.fillText(text, sx, sy + 10);
       }
 
       function drawName(name, sx, sy) {
-        context.font = "700 14px -apple-system, Helvetica, Arial, sans-serif";
+        context.font = "700 13px -apple-system, Helvetica, Arial, sans-serif";
         context.textAlign = "center";
         context.textBaseline = "top";
-        context.fillStyle = "rgba(0,0,0,0.65)";
-        context.fillText(name, sx + 1, sy + 26);
+        context.fillStyle = "rgba(0,0,0,0.8)";
+        context.fillText(name, sx + 1, sy + 25);
         context.fillStyle = "rgba(255,255,255,1)";
-        context.fillText(name, sx, sy + 25);
+        context.fillText(name, sx, sy + 24);
       }
 
       function edgeHintPosition(sx, sy) {
@@ -180,14 +192,33 @@
       }
 
       function render() {
-        if (screenWidth <= 0 || screenHeight <= 0 || canvas.width === 0 || screenWidth !== (window.innerWidth || window.screen.width)) {
+        if (screenWidth <= 0 || screenHeight <= 0 || canvas.width === 0) {
           resize();
         }
         context.clearRect(0, 0, screenWidth, screenHeight);
+
+        // ESP status watermark
+        var isWSConnected = (socket && socket.readyState === 1);
+        context.font = "600 11px -apple-system, Helvetica, Arial, sans-serif";
+        context.textAlign = "left";
+        context.textBaseline = "top";
+        context.fillStyle = "rgba(0,0,0,0.6)";
+        context.fillText(
+          "DarkSword ESP | Targets: " + entities.length + " | WS: " + (isWSConnected ? "ONLINE" : "CONNECTING"),
+          15,
+          21
+        );
+        context.fillStyle = isWSConnected ? "rgba(0,255,128,0.9)" : "rgba(255,180,0,0.9)";
+        context.fillText(
+          "DarkSword ESP | Targets: " + entities.length + " | WS: " + (isWSConnected ? "ONLINE" : "CONNECTING"),
+          14,
+          20
+        );
+
         for (var i = 0; i < entities.length; i++) {
           var entity = entities[i];
           if (!entity.visible) continue;
-          if (entity.drawLine) drawLine(entity.sx, entity.sy);
+          if (entity.drawLine) drawLine(entity.sx, entity.sy, entity.headX, entity.headY);
           if (entity.drawDistance)
             drawDistance(entity.distance || 0, entity.sx, entity.sy);
           if (entity.box) {

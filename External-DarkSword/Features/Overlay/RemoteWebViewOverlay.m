@@ -708,8 +708,9 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
 - (void)makeWebViewTransparent:(RemoteObjectRef)view {
     RemoteObjectRef uiColorClass = [self getClass:"UIColor"];
     uint64_t clearSelector = [self getSelector:"clearColor"];
+    RemoteObjectRef clearColor = 0;
     if (uiColorClass && clearSelector) {
-        RemoteObjectRef clearColor = remote_msg_on_main_thread(
+        clearColor = remote_msg_on_main_thread(
             self.remoteCall, uiColorClass, clearSelector, NULL, NULL, 0);
         if (clearColor) {
             uint64_t backgroundSelector =
@@ -723,6 +724,25 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
         }
     }
     [self setView:view boolValue:NO selector:"setOpaque:"];
+
+    // Also clear scrollView background color and opacity
+    uint64_t scrollViewSEL = [self getSelector:"scrollView"];
+    if (scrollViewSEL) {
+        RemoteObjectRef scrollView = remote_msg_on_main_thread(
+            self.remoteCall, view, scrollViewSEL, NULL, NULL, 0);
+        if (scrollView) {
+            [self setView:scrollView boolValue:NO selector:"setOpaque:"];
+            if (clearColor) {
+                uint64_t backgroundSelector = [self getSelector:"setBackgroundColor:"];
+                if (backgroundSelector) {
+                    const void *params[] = {&clearColor};
+                    size_t sizes[] = {sizeof(clearColor)};
+                    remote_msg_on_main_thread(self.remoteCall, scrollView,
+                                              backgroundSelector, params, sizes, 1);
+                }
+            }
+        }
+    }
 }
 
 - (RemoteObjectRef)createWebViewWithResource:(NSString *)resourceName
