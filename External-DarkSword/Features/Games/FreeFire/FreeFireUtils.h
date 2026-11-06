@@ -208,9 +208,18 @@ static bool ReadCameraVPAndWorldMatrix(RemoteCall *remoteCall, uintptr_t camera,
             }
             memcpy(outVP, viewProjection, sizeof(viewProjection));
             if (outView) {
-                if (!ReadValidMatrix(remoteCall,
-                                     nativeCamera + gFreeFireNativeCameraViewOffset,
-                                     outView)) {
+                bool foundView = false;
+                const uint64_t vOffsets[] = {
+                    gFreeFireNativeCameraViewOffset, kNativeCamera_WorldToCamera, 0x70, 0x80, 0x90, 0xA0
+                };
+                for (uint64_t vo : vOffsets) {
+                    if (ReadValidMatrix(remoteCall, nativeCamera + vo, outView)) {
+                        foundView = true;
+                        gFreeFireNativeCameraViewOffset = vo;
+                        break;
+                    }
+                }
+                if (!foundView) {
                     memset(outView, 0, sizeof(float) * 16);
                 }
             }

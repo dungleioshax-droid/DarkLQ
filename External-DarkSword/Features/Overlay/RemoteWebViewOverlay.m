@@ -49,6 +49,11 @@ static CGFloat OverlayClamp(CGFloat value, CGFloat lower, CGFloat upper) {
 @property(nonatomic, assign) CGFloat floatButtonXRatio;
 @property(nonatomic, assign) CGFloat floatButtonYRatio;
 
+@property(nonatomic, assign) RemoteObjectRef redColor;
+@property(nonatomic, assign) RemoteObjectRef yellowColor;
+@property(nonatomic, assign) RemoteObjectRef greenColor;
+@property(nonatomic, assign) CFAbsoluteTime overlayReadyAt;
+
 @end
 
 #pragma mark - DarkSpeed SpringBoard Thread-Safe Helpers
@@ -57,10 +62,6 @@ static NSMutableDictionary<NSString *, NSNumber *> *g_sbClassCache = nil;
 static NSMutableDictionary<NSString *, NSNumber *> *g_sbSelectorCache = nil;
 static NSMutableDictionary<NSString *, NSNumber *> *g_sbInvCache = nil;
 static NSRecursiveLock *g_sbLock = nil;
-static CFAbsoluteTime s_sbOverlayReadyAt = 0;
-static RemoteObjectRef s_sbRedColor = 0;
-static RemoteObjectRef s_sbYellowColor = 0;
-static RemoteObjectRef s_sbGreenColor = 0;
 
 static uint64_t ds_remote_class(RemoteCall *process, const char *name);
 static uint64_t ds_remote_sel(RemoteCall *process, const char *name);
@@ -475,6 +476,7 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
                      isSpringBoard:(BOOL)isSpringBoard {
     self = [super init];
     if (self) {
+        ds_inv_cache_clear(remoteCall);
         _remoteCall = remoteCall;
         _isSpringBoard = isSpringBoard;
         _window = 0;
@@ -489,6 +491,10 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
         _hasCustomFloatButtonPosition = NO;
         _floatButtonXRatio = 0;
         _floatButtonYRatio = 0;
+        _redColor = 0;
+        _yellowColor = 0;
+        _greenColor = 0;
+        _overlayReadyAt = 0;
         memset(_espSlots, 0, sizeof(_espSlots));
     }
     return self;
@@ -530,25 +536,24 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
 - (BOOL)findTargetWindow {
     LOG(@"[RemoteWebViewOverlay] Finding target UIWindow...");
 
-    RemoteObjectRef uiApplicationClass = [self getClass:"UIApplication"];
+    uint64_t uiApplicationClass = ds_remote_class(self.remoteCall, "UIApplication");
     if (!uiApplicationClass) {
         LOG(@"[RemoteWebViewOverlay] UIApplication class not found");
         return NO;
     }
 
-    RemoteObjectRef application = [self call:uiApplicationClass
-                                    selector:"sharedApplication"];
+    uint64_t application = ds_remote_get_object_on_main(self.remoteCall, uiApplicationClass, "sharedApplication");
     if (!application) {
         LOG(@"[RemoteWebViewOverlay] UIApplication == NULL");
         return NO;
     }
 
     // Attempt 1: UIApplicationDelegate.window (standard in UnityAppController)
-    RemoteObjectRef delegate = [self call:application selector:"delegate"];
+    uint64_t delegate = ds_remote_get_object_on_main(self.remoteCall, application, "delegate");
     if (delegate) {
-        RemoteObjectRef delegateWindow = [self call:delegate selector:"window"];
+        uint64_t delegateWindow = ds_remote_get_object_on_main(self.remoteCall, delegate, "window");
         if (delegateWindow) {
-            RemoteObjectRef isHidden = [self call:delegateWindow selector:"isHidden"];
+            uint64_t isHidden = ds_remote_get_u64_on_main(self.remoteCall, delegateWindow, "isHidden");
             if (!isHidden) {
                 self.window = delegateWindow;
                 LOG(@"[RemoteWebViewOverlay] FOUND UIWindow via delegate = 0x%llx", delegateWindow);
@@ -558,9 +563,9 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
     }
 
     // Attempt 2: keyWindow
-    RemoteObjectRef keyWindow = [self call:application selector:"keyWindow"];
+    uint64_t keyWindow = ds_remote_get_object_on_main(self.remoteCall, application, "keyWindow");
     if (keyWindow) {
-        RemoteObjectRef isHidden = [self call:keyWindow selector:"isHidden"];
+        uint64_t isHidden = ds_remote_get_u64_on_main(self.remoteCall, keyWindow, "isHidden");
         if (!isHidden) {
             self.window = keyWindow;
             LOG(@"[RemoteWebViewOverlay] FOUND UIWindow via keyWindow = 0x%llx", keyWindow);
@@ -568,58 +573,46 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
         }
     }
 
-    // Attempt 3: connectedScenes -> windows
-    RemoteObjectRef connectedScenes = [self call:application
-                                        selector:"connectedScenes"];
-    if (!connectedScenes) {
-        LOG(@"[RemoteWebViewOverlay] connectedScenes == NULL");
-        return NO;
+    // Attempt 3: windows
+    uint64_t windows = ds_remote_get_object_on_main(self.remoteCall, application, "windows");
+    if (windows) {
+        uint64_t count = ds_remote_get_u64_on_main(self.remoteCall, windows, "count");
+        for (uint64_t i = 0; i < count; i++) {
+            uint64_t w = remote_msg(self.remoteCall, windows, ds_remote_sel(self.remoteCall, "objectAtIndex:"), i, 0, 0, 0);
+            if (w) {
+                uint64_t isHidden = ds_remote_get_u64_on_main(self.remoteCall, w, "isHidden");
+                if (!isHidden) {
+                    self.window = w;
+                    LOG(@"[RemoteWebViewOverlay] FOUND UIWindow via windows[%llu] = 0x%llx", i, w);
+                    return YES;
+                }
+            }
+        }
     }
 
-    RemoteObjectRef scenes = [self call:connectedScenes selector:"allObjects"];
-    if (!scenes) {
-        LOG(@"[RemoteWebViewOverlay] scenes == NULL");
-        return NO;
-    }
-
-    NSUInteger sceneCount = (NSUInteger)[self call:scenes selector:"count"];
-    LOG(@"[RemoteWebViewOverlay] sceneCount = %lu", (unsigned long)sceneCount);
-
-    uint64_t objectAtIndexSEL = [self getSelector:"objectAtIndex:"];
-    if (!objectAtIndexSEL)
-        return NO;
-
-    for (NSUInteger i = 0; i < sceneCount; i++) {
-        RemoteObjectRef scene =
-            remote_msg(self.remoteCall, scenes, objectAtIndexSEL, i, 0, 0, 0);
-        if (!scene)
-            continue;
-
-        RemoteObjectRef windows = [self call:scene selector:"windows"];
-        if (!windows)
-            continue;
-
-        NSUInteger windowCount =
-            (NSUInteger)[self call:windows selector:"count"];
-        LOG(@"[RemoteWebViewOverlay] scene[%lu] windowCount = %lu",
-            (unsigned long)i, (unsigned long)windowCount);
-
-        for (NSUInteger j = 0; j < windowCount; j++) {
-            RemoteObjectRef window = remote_msg(self.remoteCall, windows,
-                                                objectAtIndexSEL, j, 0, 0, 0);
-            if (!window)
-                continue;
-
-            RemoteObjectRef hidden = [self call:window selector:"isHidden"];
-            LOG(@"[RemoteWebViewOverlay] window[%lu] = 0x%llx hidden=%llu",
-                (unsigned long)j, window, hidden);
-
-            if (hidden)
-                continue;
-
-            self.window = window;
-            LOG(@"[RemoteWebViewOverlay] FOUND UIWindow = 0x%llx", window);
-            return YES;
+    // Attempt 4: connectedScenes -> windows
+    uint64_t connectedScenes = ds_remote_get_object_on_main(self.remoteCall, application, "connectedScenes");
+    if (connectedScenes) {
+        uint64_t scenes = ds_remote_get_object_on_main(self.remoteCall, connectedScenes, "allObjects");
+        if (scenes) {
+            uint64_t sceneCount = ds_remote_get_u64_on_main(self.remoteCall, scenes, "count");
+            for (uint64_t i = 0; i < sceneCount; i++) {
+                uint64_t scene = remote_msg(self.remoteCall, scenes, ds_remote_sel(self.remoteCall, "objectAtIndex:"), i, 0, 0, 0);
+                if (!scene) continue;
+                uint64_t scWindows = ds_remote_get_object_on_main(self.remoteCall, scene, "windows");
+                if (!scWindows) continue;
+                uint64_t winCount = ds_remote_get_u64_on_main(self.remoteCall, scWindows, "count");
+                for (uint64_t j = 0; j < winCount; j++) {
+                    uint64_t w = remote_msg(self.remoteCall, scWindows, ds_remote_sel(self.remoteCall, "objectAtIndex:"), j, 0, 0, 0);
+                    if (!w) continue;
+                    uint64_t isHidden = ds_remote_get_u64_on_main(self.remoteCall, w, "isHidden");
+                    if (!isHidden) {
+                        self.window = w;
+                        LOG(@"[RemoteWebViewOverlay] FOUND UIWindow via scene[%llu].windows[%llu] = 0x%llx", i, j, w);
+                        return YES;
+                    }
+                }
+            }
         }
     }
 
@@ -1044,9 +1037,9 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
     uint64_t blackColor = ds_remote_get_retained_object_on_main(self.remoteCall, colorClass, "blackColor");
     uint64_t whiteCGColor = whiteColor ? ds_remote_get_object_on_main(self.remoteCall, whiteColor, "CGColor") : 0;
 
-    s_sbRedColor = redColor;
-    s_sbYellowColor = yellowColor;
-    s_sbGreenColor = greenColor;
+    self.redColor = redColor;
+    self.yellowColor = yellowColor;
+    self.greenColor = greenColor;
 
     if (clearColor) {
         ds_perform_on_springboard_main(self.remoteCall, window, ds_remote_sel(self.remoteCall, "setBackgroundColor:"), clearColor, YES);
@@ -1083,7 +1076,7 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
     self.window = window;
     self.parentView = window;
     self.isOverlayReady = YES;
-    s_sbOverlayReadyAt = CFAbsoluteTimeGetCurrent();
+    self.overlayReadyAt = CFAbsoluteTimeGetCurrent();
 
     LOG(@"[RemoteWebViewOverlay] SpringBoard overlay window ready with %lu ESP slots (window=0x%llx)",
         (unsigned long)kMaxOverlaySlots, window);
@@ -1104,36 +1097,11 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
         return NO;
     }
 
-    // 1. Resolve active game window and windowScene
+    // 1. Resolve active game window
     uint64_t gameWindow = 0;
     if ([self findTargetWindow]) {
         gameWindow = self.window;
     }
-
-    uint64_t scene = 0;
-    if (gameWindow) {
-        scene = ds_remote_get_object_on_main(self.remoteCall, gameWindow, "windowScene");
-    }
-
-    if (!scene) {
-        uint64_t uiAppClass = ds_remote_class(self.remoteCall, "UIApplication");
-        if (uiAppClass) {
-            uint64_t app = ds_remote_get_object_on_main(self.remoteCall, uiAppClass, "sharedApplication");
-            if (app) {
-                uint64_t connectedScenes = ds_remote_get_object_on_main(self.remoteCall, app, "connectedScenes");
-                if (connectedScenes) {
-                    uint64_t scenes = ds_remote_get_object_on_main(self.remoteCall, connectedScenes, "allObjects");
-                    if (scenes) {
-                        uint64_t sceneCount = ds_remote_get_u64_on_main(self.remoteCall, scenes, "count");
-                        if (sceneCount > 0) {
-                            scene = remote_msg(self.remoteCall, scenes, ds_remote_sel(self.remoteCall, "objectAtIndex:"), 0, 0, 0, 0);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    LOG(@"[RemoteWebViewOverlay] Internal UIWindowScene = 0x%llx (gameWindow=0x%llx)", scene, gameWindow);
 
     // 2. Resolve screen bounds
     CGFloat screenW = MAX(kWidth, kHeight);
@@ -1161,9 +1129,9 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
     uint64_t blackColor = ds_remote_get_retained_object_on_main(self.remoteCall, colorClass, "blackColor");
     uint64_t whiteCGColor = whiteColor ? ds_remote_get_object_on_main(self.remoteCall, whiteColor, "CGColor") : 0;
 
-    s_sbRedColor = redColor;
-    s_sbYellowColor = yellowColor;
-    s_sbGreenColor = greenColor;
+    self.redColor = redColor;
+    self.yellowColor = yellowColor;
+    self.greenColor = greenColor;
 
     // 4. Resolve Fonts (11pt Bold for distance, 14pt Bold for name)
     uint64_t fontClass = ds_remote_class(self.remoteCall, "UIFont");
@@ -1179,59 +1147,44 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
         ds_remote_invoke_on_main_result(self.remoteCall, fontClass, ds_remote_sel(self.remoteCall, "boldSystemFontOfSize:"), &fontArg14, 1, &nameFont, sizeof(nameFont), YES);
     }
 
-    // 5. Create dedicated overlay UIWindow (with windowLevel = 10000010.0, userInteractionEnabled = 0)
     uint64_t allocSEL = ds_remote_sel(self.remoteCall, "alloc");
-    uint64_t overlayWindow = remote_msg(self.remoteCall, windowClass, allocSEL, 0, 0, 0, 0);
+
+    // 5. In internal mode, attach ESP slots directly to the active game view hierarchy!
+    // This inherits the game's landscape orientation, active windowScene, and viewport transforms.
     uint64_t parentView = 0;
-
-    if (overlayWindow && ds_remote_invoke_noarg_on_main(self.remoteCall, overlayWindow, "init")) {
-        CGRect fullFrame = CGRectMake(0, 0, screenW, screenH);
-        ds_remote_set_rect_on_main(self.remoteCall, overlayWindow, "setFrame:", fullFrame);
-        if (scene) {
-            ds_perform_on_springboard_main(self.remoteCall, overlayWindow, ds_remote_sel(self.remoteCall, "setWindowScene:"), scene, YES);
-        }
-        ds_remote_set_double_on_main(self.remoteCall, overlayWindow, "setWindowLevel:", 10000010.0);
-        ds_remote_set_u64_on_main(self.remoteCall, overlayWindow, "setUserInteractionEnabled:", 0);
-        ds_remote_set_u64_on_main(self.remoteCall, overlayWindow, "setOpaque:", 0);
-
-        uint64_t winLayer = ds_remote_get_object_on_main(self.remoteCall, overlayWindow, "layer");
-        if (winLayer) {
-            ds_remote_set_double_on_main(self.remoteCall, winLayer, "setSpeed:", 999.0);
-        }
-        if (clearColor) {
-            ds_perform_on_springboard_main(self.remoteCall, overlayWindow, ds_remote_sel(self.remoteCall, "setBackgroundColor:"), clearColor, YES);
-        }
-
-        // Set transparent UIViewController as rootViewController for proper landscape rotation handling
-        uint64_t vcClass = ds_remote_class(self.remoteCall, "UIViewController");
-        if (vcClass) {
-            uint64_t vc = remote_msg(self.remoteCall, vcClass, allocSEL, 0, 0, 0, 0);
-            if (vc && ds_remote_invoke_noarg_on_main(self.remoteCall, vc, "init")) {
-                uint64_t vcView = ds_remote_get_object_on_main(self.remoteCall, vc, "view");
-                if (vcView) {
-                    ds_remote_set_u64_on_main(self.remoteCall, vcView, "setUserInteractionEnabled:", 0);
-                    ds_remote_set_u64_on_main(self.remoteCall, vcView, "setOpaque:", 0);
-                    if (clearColor) {
-                        ds_perform_on_springboard_main(self.remoteCall, vcView, ds_remote_sel(self.remoteCall, "setBackgroundColor:"), clearColor, YES);
-                    }
-                }
-                ds_perform_on_springboard_main(self.remoteCall, overlayWindow, ds_remote_sel(self.remoteCall, "setRootViewController:"), vc, YES);
+    if (gameWindow) {
+        uint64_t rootVC = ds_remote_get_object_on_main(self.remoteCall, gameWindow, "rootViewController");
+        if (rootVC) {
+            uint64_t rootVCView = ds_remote_get_object_on_main(self.remoteCall, rootVC, "view");
+            if (rootVCView) {
+                parentView = rootVCView;
+                LOG(@"[RemoteWebViewOverlay] Attached internal overlay to rootViewController.view = 0x%llx", parentView);
             }
         }
-
-        ds_remote_set_u64_on_main(self.remoteCall, overlayWindow, "setHidden:", 0);
-        self.window = overlayWindow;
-        parentView = overlayWindow;
-        LOG(@"[RemoteWebViewOverlay] Internal overlay window created = 0x%llx", overlayWindow);
-    } else {
-        // Fallback: attach slots to gameWindow
-        if (!gameWindow) {
-            LOG(@"[RemoteWebViewOverlay] Failed to create overlay window and no gameWindow found");
-            return NO;
+        if (!parentView) {
+            parentView = gameWindow;
+            LOG(@"[RemoteWebViewOverlay] Attached internal overlay directly to gameWindow = 0x%llx", parentView);
         }
         self.window = gameWindow;
-        parentView = gameWindow;
-        LOG(@"[RemoteWebViewOverlay] Internal fallback to game window = 0x%llx", gameWindow);
+    } else {
+        // Fallback: create dedicated UIWindow
+        uint64_t overlayWindow = remote_msg(self.remoteCall, windowClass, allocSEL, 0, 0, 0, 0);
+        if (overlayWindow && ds_remote_invoke_noarg_on_main(self.remoteCall, overlayWindow, "init")) {
+            CGRect fullFrame = CGRectMake(0, 0, screenW, screenH);
+            ds_remote_set_rect_on_main(self.remoteCall, overlayWindow, "setFrame:", fullFrame);
+            ds_remote_set_double_on_main(self.remoteCall, overlayWindow, "setWindowLevel:", 10000010.0);
+            ds_remote_set_u64_on_main(self.remoteCall, overlayWindow, "setUserInteractionEnabled:", 0);
+            ds_remote_set_u64_on_main(self.remoteCall, overlayWindow, "setOpaque:", 0);
+            if (clearColor) {
+                ds_perform_on_springboard_main(self.remoteCall, overlayWindow, ds_remote_sel(self.remoteCall, "setBackgroundColor:"), clearColor, YES);
+            }
+            ds_remote_set_u64_on_main(self.remoteCall, overlayWindow, "setHidden:", 0);
+            self.window = overlayWindow;
+            parentView = overlayWindow;
+        } else {
+            LOG(@"[RemoteWebViewOverlay] Failed to resolve gameWindow or create overlay window");
+            return NO;
+        }
     }
 
     self.parentView = parentView;
@@ -1251,7 +1204,7 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
                           nameFont:nameFont];
 
     self.isOverlayReady = YES;
-    s_sbOverlayReadyAt = CFAbsoluteTimeGetCurrent();
+    self.overlayReadyAt = CFAbsoluteTimeGetCurrent();
 
     LOG(@"[RemoteWebViewOverlay] Internal overlay window ready with %lu ESP slots (window=0x%llx, parentView=0x%llx)",
         (unsigned long)kMaxOverlaySlots, self.window, self.parentView);
@@ -1397,7 +1350,7 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
     }
 
     CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-    if (s_sbOverlayReadyAt > 0 && now - s_sbOverlayReadyAt < 0.5) {
+    if (self.overlayReadyAt > 0 && now - self.overlayReadyAt < 0.5) {
         return YES; // Settle delay: give overlay 0.5s to attach window scene before frame updates
     }
 
@@ -1470,7 +1423,7 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
                     // Dynamic Health Color (< 30%: Red, <= 60%: Yellow, > 60%: Green)
                     int colorState = (hpRatio < 0.3) ? 1 : ((hpRatio <= 0.6) ? 2 : 3);
                     if (colorState != slot->lastHpColorState) {
-                        uint64_t targetColor = (colorState == 1) ? s_sbRedColor : ((colorState == 2) ? s_sbYellowColor : s_sbGreenColor);
+                        uint64_t targetColor = (colorState == 1) ? self.redColor : ((colorState == 2) ? self.yellowColor : self.greenColor);
                         if (targetColor) {
                             ds_perform_on_springboard_main(self.remoteCall, slot->hpFillView, ds_remote_sel(self.remoteCall, "setBackgroundColor:"), targetColor, YES);
                         }
@@ -1754,7 +1707,7 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
         self.isSpringBoard ? "SpringBoard" : "Internal");
 
     ds_inv_cache_clear(self.remoteCall);
-    s_sbOverlayReadyAt = 0;
+    self.overlayReadyAt = 0;
     uint64_t removeSEL = ds_remote_sel(self.remoteCall, "removeFromSuperview");
     if (removeSEL) {
         for (NSUInteger i = 0; i < kMaxOverlaySlots; i++) {
@@ -1768,9 +1721,9 @@ static inline BOOL IsLineSignificantlyDifferent(CGFloat lenA, CGFloat lenB,
             memset(slot, 0, sizeof(SpringBoardESPSlot));
         }
     }
-    s_sbRedColor = 0;
-    s_sbYellowColor = 0;
-    s_sbGreenColor = 0;
+    self.redColor = 0;
+    self.yellowColor = 0;
+    self.greenColor = 0;
 
     if (removeSEL) {
         if (self.floatButtonWebView) {

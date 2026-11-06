@@ -1332,6 +1332,18 @@ found:
         }
     }
 
+    // Resolve local player 3D position and camera position fallback
+    Vector3 localPlayerPos = Vector3::zero();
+    if (validOffsetPtr(localPlayerPawn)) {
+        ReadEntityPosition(remoteCall, localPlayerPawn, &localPlayerPos);
+        if (cameraPos.x == 0.0f && cameraPos.y == 0.0f && cameraPos.z == 0.0f) {
+            uintptr_t camTrans = CleanPointer(ReadMemorySafe<uintptr_t>(remoteCall, localPlayerPawn + kPlayer_MainCameraTransform));
+            if (validOffsetPtr(camTrans)) {
+                cameraPos = GetPositionExt(remoteCall, camTrans);
+            }
+        }
+    }
+
     // 5. Read Entities from MatchGame or BaseGame or UIScene
     FreeFireEntityContainer containerInfo = [self resolveEntityContainer:remoteCall
                                                                matchGame:currentMatchGame
@@ -1546,10 +1558,13 @@ found:
             playerName = [NSString stringWithUTF8String:className];
         }
 
-        // Distance from camera to player
-        float distance = Vector3::Distance(cameraPos, pos);
-        if (distance > 300.0f)
-            continue;
+        // Distance from camera or local player to enemy
+        float distance = 0.0f;
+        if (cameraPos.x != 0.0f || cameraPos.y != 0.0f || cameraPos.z != 0.0f) {
+            distance = Vector3::Distance(cameraPos, pos);
+        } else if (localPlayerPos.x != 0.0f || localPlayerPos.y != 0.0f || localPlayerPos.z != 0.0f) {
+            distance = Vector3::Distance(localPlayerPos, pos);
+        }
 
         CGFloat screenX = 0.0, screenY = 0.0;
         CGFloat headSX = 0.0, headSY = 0.0;
@@ -1567,7 +1582,34 @@ found:
             continue;
         }
 
+        // If distance was not available from 3D positions, use the camera eye depth from projection
+        if (distance <= 0.001f) {
+            Vector3 vp = WorldToViewportPoint(pos, viewProjection);
+            if (vp.z > 0.001f) {
+                distance = vp.z;
+            }
+        }
+
+        // Drop targets that are unrealistically far (beyond 450m)
+        if (distance > 450.0f)
+            continue;
+
         ++projectedCount;
+
+        // Ensure valid base screen anchor
+        if (headVisible && footVisible) {
+            screenX = (headSX + footSX) * 0.5;
+            screenY = footSY;
+            visible = YES;
+        } else if (!visible && headVisible) {
+            screenX = headSX;
+            screenY = headSY;
+            visible = YES;
+        } else if (!visible && footVisible) {
+            screenX = footSX;
+            screenY = footSY;
+            visible = YES;
+        }
 
         FreeFireEntitySnapshot *snapshot = [FreeFireEntitySnapshot new];
         snapshot.actorAddress = entity;
@@ -1578,8 +1620,9 @@ found:
         snapshot.screenX = screenX;
         snapshot.screenY = screenY;
         snapshot.visible = YES;
-        BOOL onScreen = IsScreenPointInside(screenX, screenY, sw, sh) ||
-                        (headVisible && IsScreenPointInside(headSX, headSY, sw, sh));
+        BOOL onScreen = (visible && IsScreenPointInside(screenX, screenY, sw, sh)) ||
+                        (headVisible && IsScreenPointInside(headSX, headSY, sw, sh)) ||
+                        (footVisible && IsScreenPointInside(footSX, footSY, sw, sh));
         snapshot.onScreen = onScreen;
         snapshot.distance = distance;
 
@@ -1603,6 +1646,10 @@ found:
             snapshot.boxY = screenY - estimatedH;
             snapshot.boxW = boxWidth;
             snapshot.boxH = estimatedH;
+            snapshot.headX = screenX;
+            snapshot.headY = screenY - estimatedH;
+            snapshot.footX = screenX;
+            snapshot.footY = screenY;
         }
 
         [entities addObject:snapshot];
